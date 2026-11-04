@@ -1,0 +1,28 @@
+# PDF Reader CP 1.0
+Programma opensource progettato da Peppe CP con l'aiuto della IA.
+
+Lettore PDF a schede in Rust (egui + PDFium): una sola barra in alto con schede e comandi di stampa, documento a tutto schermo.
+
+## Creare l'installer per Windows
+**Metodo 1 - sul tuo PC (Windows 10/11 x64):** installa Rust (https://rustup.rs), poi doppio clic su `build.bat`.
+Scarica da solo pdfium.dll e Inno Setup e produce `dist\PDFReaderCP_Setup_1.0.exe`.
+
+**Metodo 2 - senza installare nulla:** carica la cartella su GitHub, poi Actions > "Crea installer" > Run workflow.
+L'installer si scarica dagli "Artifacts" a fine lavoro.
+
+## Uso
+- Barra del titolo (una sola riga): **File** | schede (tutto lo spazio disponibile) | icone **Stampa…**, **Stampa subito**, **STAMPA TUTTO** | riduci / massimizza / chiudi.
+- Menu **File**: Apri, Chiudi scheda / tutte, Stampa…, Stampa subito, STAMPA TUTTO, Stampante, Pagine per foglio, Schermo intero, **Info**, Esci.
+- **Stampa…** (Ctrl+P): anteprima dettagliata (1, 2, 4, 6, 9, 16 pagine per foglio), copie, fascicola, intervallo, scala, rotazione, centratura.
+- **Stampa subito** (Ctrl+Maiusc+P): scheda corrente con le ultime impostazioni, senza anteprima.
+- **STAMPA TUTTO**: tutte le schede aperte, ognuna per intero, in sequenza, con un solo messaggio di conferma.
+- Molti PDF: Ctrl+Tab / Ctrl+Maiusc+Tab cambiano scheda, Ctrl+W la chiude, clic con la rotellina sulla scheda la chiude, rotellina del mouse sulla barra scorre le schede.
+- F11 schermo intero · frecce / PagSu / PagGiu cambiano pagina · Ctrl+rotellina zoom · trascina i PDF nella finestra.
+- **Istanza unica**: se il programma e' gia' aperto, un altro PDF (doppio clic, "Apri con", riga di comando) si apre in una nuova scheda della stessa finestra, che torna in primo piano. Usa la porta locale 127.0.0.1:47653.
+- La finestra si apre sempre ingrandita. Ogni scheda ha la sua "x" di chiusura integrata (clic con la rotellina = chiudi).
+- Stampa...: scala **Adatta alla pagina**, **Dimensioni reali (100%)** oppure **Proporzione personalizzata** (25-200 %); con piu' pagine per foglio la scala e' automatica.
+- **Testo selezionabile**: trascina il mouse sul testo della pagina, poi Ctrl+C (o tasto destro > Copia). Ctrl+A seleziona tutto il testo della pagina. I PDF scansionati (solo immagini) non hanno testo da selezionare.
+- Con il testo selezionato non si trascina piu' la pagina col mouse: usa rotellina e barre di scorrimento.
+- **Stampa...**: pulsante **Impostazioni driver stampante...** (proprieta' del driver: fronte/retro, vassoio, qualita', colore, finitura...). Le scelte del driver vengono usate nella stampa e ricordate per quella stampante; la carta dell'anteprima segue quella del driver.
+- **Colore e luminosita'**: Colori / Scala di grigi / Bianco e nero e cursore Scuro-Chiaro (valido per anteprima e stampa).
+- **Copie**: pulsanti - e + accanto al numero. Con piu' di una copia il programma chiede conferma ("Sicuro di voler stampare N copie del file?", oppure "...dei file aperti?" con STAMPA TUTTO).

@@ -1,0 +1,1000 @@
+// PDF Reader CP 1.0 - Programma opensource progettato da Peppe CP con l'aiuto della IA.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+use eframe::egui::{self, Button, Color32, RichText, Vec2};
+use pdfium_render::prelude::*;
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, path::PathBuf, time::{Duration, Instant}};
+use std::io::{BufRead as _, BufReader, Write as _};
+
+const ACCENT: Color32 = Color32::from_rgb(198, 47, 47);
+const BAR: Color32 = Color32::from_rgb(229, 231, 235);
+const A4: (f32, f32) = (595.0, 842.0); // punti (1/72")
+const ICON: &[u8] = include_bytes!("../assets/icon.png");
+const NUPS: [u32; 6] = [1, 2, 4, 6, 9, 16]; // pagine per foglio
+
+// ---------- impostazioni di stampa (salvate: servono a "Stampa subito") ----------
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+enum PageSel { All, Current, Custom }
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+enum ScaleMode { Fit, Actual, Custom }
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+enum ColorMode { Color, Gray, Bw }
+
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default)]
+struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, border: bool, color: ColorMode, bright: i32, drv_printer: String, drv_mode: String }
+impl Default for Settings {
+    fn default() -> Self {
+        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, border: true, color: ColorMode::Color, bright: 0, drv_printer: String::new(), drv_mode: String::new() }
+    }
+}
+impl Settings {
+    fn path() -> Option<PathBuf> { dirs::config_dir().map(|d| d.join("PDFReaderCP").join("settings.json")) }
+    fn load() -> Self {
+        Self::path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+    fn save(&self) {
+        if let Some(p) = Self::path() {
+            let _ = std::fs::create_dir_all(p.parent().unwrap());
+            let _ = std::fs::write(p, serde_json::to_string_pretty(self).unwrap());
+        }
+    }
+}
+
+fn pages_for(st: &Settings, cur: usize, n: usize) -> Vec<usize> {
+    match st.sel {
+        PageSel::All => (0..n).collect(),
+        PageSel::Current => vec![cur],
+        PageSel::Custom => {
+            let mut v = vec![];
+            for part in st.custom.split(',') {
+                let part = part.trim();
+                let (a, b) = match part.split_once('-') {
+                    Some((a, b)) => (a.trim().parse::<usize>().unwrap_or(1), if b.trim().is_empty() { n } else { b.trim().parse::<usize>().unwrap_or(n) }),
+                    None => { let x = part.parse::<usize>().unwrap_or(0); (x, x) }
+                };
+                for p in a.max(1)..=b.min(n) { if !v.contains(&(p - 1)) { v.push(p - 1); } }
+            }
+            v
+        }
+    }
+}
+
+fn short(s: &str, n: usize) -> String {
+    if s.chars().count() > n { format!("{}…", s.chars().take(n - 1).collect::<String>()) } else { s.to_string() }
+}
+
+// ---------- rendering ----------
+fn rot90(w: usize, h: usize, d: &[u8]) -> (usize, usize, Vec<u8>) {
+    let mut o = vec![0u8; d.len()];
+    for y in 0..h { for x in 0..w {
+        let (s, t) = ((y * w + x) * 4, (x * h + (h - 1 - y)) * 4);
+        o[t..t + 4].copy_from_slice(&d[s..s + 4]);
+    } }
+    (h, w, o)
+}
+
+/// Rende una pagina in RGBA con la larghezza indicata (px).
+fn render(pdfium: &Pdfium, path: &PathBuf, page: usize, width: i32) -> Option<(usize, usize, Vec<u8>)> {
+    let doc = pdfium.load_pdf_from_file(path, None).ok()?;
+    let p = doc.pages().get(page as u16).ok()?;
+    let bmp = p.render_with_config(&PdfRenderConfig::new().set_target_width(width)).ok()?;
+    let (w, h) = (bmp.width() as usize, bmp.height() as usize);
+    let mut d = bmp.as_raw_bytes().to_vec(); // BGRA -> RGBA
+    for c in d.chunks_exact_mut(4) { c.swap(0, 2); c[3] = 255; }
+    Some((w, h, d))
+}
+
+fn blit(dst: &mut [u8], dw: usize, dh: usize, src: &[u8], sw: usize, sh: usize, x: i32, y: i32) {
+    for r in 0..sh {
+        let ty = y + r as i32;
+        if ty < 0 || ty >= dh as i32 { continue; }
+        let x0 = x.max(0) as usize;
+        let x1 = (x + sw as i32).min(dw as i32).max(0) as usize;
+        if x1 <= x0 { continue; }
+        let (sx, len) = ((x0 as i32 - x) as usize, x1 - x0);
+        let (d, s) = ((ty as usize * dw + x0) * 4, (r * sw + sx) * 4);
+        dst[d..d + len * 4].copy_from_slice(&src[s..s + len * 4]);
+    }
+}
+
+fn outline(dst: &mut [u8], dw: usize, dh: usize, x: i32, y: i32, w: usize, h: usize) {
+    let mut px = |xx: i32, yy: i32| {
+        if xx >= 0 && yy >= 0 && (xx as usize) < dw && (yy as usize) < dh {
+            let i = (yy as usize * dw + xx as usize) * 4;
+            dst[i..i + 3].copy_from_slice(&[140, 140, 140]);
+        }
+    };
+    for i in 0..w as i32 { px(x + i, y); px(x + i, y + h as i32 - 1); }
+    for j in 0..h as i32 { px(x, y + j); px(x + w as i32 - 1, y + j); }
+}
+
+/// Compone UN foglio (1, 2, 4, 6, 9 o 16 pagine) su carta `pap` (punti). Usata sia per l'anteprima sia per la stampa.
+/// `ppp` = pixel per punto. Restituisce RGBA gia' ruotato come la carta fisica.
+fn compose(pdfium: &Pdfium, d: &Doc, pages: &[usize], pap: (f32, f32), st: &Settings, ppp: f32) -> Option<(usize, usize, Vec<u8>)> {
+    let n = st.nup.max(1) as usize;
+    let (pw0, ph0) = d.sizes[*pages.first()?];
+    let land = pw0 > ph0;
+    let pg = match n { 2 => (1, 2), 4 => (2, 2), 6 => (2, 3), 9 => (3, 3), 16 => (4, 4), _ => (1, 1) }; // colonne x righe su foglio verticale
+    // 2 su 1 / 6 su 1 con pagine verticali: foglio orizzontale (pagine affiancate)
+    let sheet_land = st.rotate && if n == 1 { land } else if pg.0 != pg.1 { !land } else { land };
+    let (cols, rows) = if sheet_land { (pg.1, pg.0) } else { pg };
+    let (mx, mn) = (pap.0.max(pap.1), pap.0.min(pap.1));
+    let (sw, sh) = if sheet_land { (mx, mn) } else { (mn, mx) };
+    let rot = sheet_land != (pap.0 > pap.1);
+    let (bw, bh) = (((sw * ppp) as usize).max(1), ((sh * ppp) as usize).max(1));
+    let mut buf = vec![255u8; bw * bh * 4];
+    let (cw, ch) = (sw / cols as f32, sh / rows as f32);
+    let m = if n > 1 { 6.0 } else { 0.0 };
+    for (i, &p) in pages.iter().enumerate() {
+        let (pw, ph) = d.sizes[p];
+        let (aw, ah) = (cw - 2.0 * m, ch - 2.0 * m);
+        let fit = (aw / pw).min(ah / ph);
+        let s = if n > 1 { fit } else { match st.scale { ScaleMode::Fit => fit, ScaleMode::Actual => 1.0, ScaleMode::Custom => st.pct.clamp(25, 200) as f32 / 100.0 } };
+        let (w, h) = (pw * s, ph * s);
+        let (cx, cy) = ((i % cols) as f32 * cw + m, (i / cols) as f32 * ch + m);
+        let (x, y) = if st.center || n > 1 { (cx + (aw - w) / 2.0, cy + (ah - h) / 2.0) } else { (cx, cy) };
+        let (iw, ih, data) = render(pdfium, &d.path, p, ((w * ppp) as i32).max(8))?;
+        let (xi, yi) = ((x * ppp) as i32, (y * ppp) as i32);
+        blit(&mut buf, bw, bh, &data, iw, ih, xi, yi);
+        if n > 1 && st.border {
+            for t in 0..((ppp / 2.0).max(1.0) as i32) {
+                outline(&mut buf, bw, bh, xi + t, yi + t, (iw as i32 - 2 * t).max(1) as usize, (ih as i32 - 2 * t).max(1) as usize);
+            }
+        }
+    }
+    tone(&mut buf, st);
+    Some(if rot { rot90(bw, bh, &buf) } else { (bw, bh, buf) })
+}
+
+/// Legge i caratteri (con posizione) di una pagina dal livello di testo del PDF.
+fn load_chars(pdfium: &Pdfium, path: &PathBuf, page: usize) -> Vec<TCh> {
+    let mut v = vec![];
+    let Ok(doc) = pdfium.load_pdf_from_file(path, None) else { return v };
+    let Ok(p) = doc.pages().get(page as u16) else { return v };
+    let Ok(t) = p.text() else { return v };
+    for ch in t.chars().iter() {
+        let c = ch.unicode_char().unwrap_or('\0');
+        let r = ch.loose_bounds().map(|b| [b.left().value, b.bottom().value, b.right().value, b.top().value]).unwrap_or([0.0; 4]);
+        v.push(TCh { c, r });
+    }
+    v
+}
+
+/// Carattere piu' vicino al punto (x, y) in coordinate pagina PDF.
+fn hit(chars: &[TCh], x: f32, y: f32) -> Option<usize> {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, c) in chars.iter().enumerate() {
+        let [l, b, r, t] = c.r;
+        if r - l < 0.01 || t - b < 0.01 { continue; }
+        let dx = if x < l { l - x } else if x > r { x - r } else { 0.0 };
+        let dy = if y < b { b - y } else if y > t { y - t } else { 0.0 };
+        let d = dx * dx + dy * dy * 4.0; // privilegia la stessa riga
+        if best.map_or(true, |(_, bd)| d < bd) { best = Some((i, d)); }
+        if d == 0.0 { break; }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// Colore / scala di grigi / bianco e nero e chiaro-scuro (curva gamma: il bianco della carta resta bianco).
+fn tone(buf: &mut [u8], st: &Settings) {
+    if st.color == ColorMode::Color && st.bright == 0 { return; }
+    let g = 2f32.powf(-(st.bright as f32) / 50.0); // >0 = piu' chiaro, <0 = piu' scuro
+    let lut: Vec<u8> = (0..256).map(|v| (255.0 * (v as f32 / 255.0).powf(g)).round().clamp(0.0, 255.0) as u8).collect();
+    for p in buf.chunks_exact_mut(4) {
+        let lum = ((0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32) as usize).min(255);
+        match st.color {
+            ColorMode::Color => { p[0] = lut[p[0] as usize]; p[1] = lut[p[1] as usize]; p[2] = lut[p[2] as usize]; }
+            ColorMode::Gray => { let l = lut[lum]; p[0] = l; p[1] = l; p[2] = l; }
+            ColorMode::Bw => { let v = if lut[lum] >= 128 { 255 } else { 0 }; p[0] = v; p[1] = v; p[2] = v; }
+        }
+    }
+}
+
+fn to_hex(b: &[u8]) -> String { b.iter().map(|x| format!("{x:02x}")).collect() }
+fn from_hex(s: &str) -> Vec<u8> { (0..s.len() / 2).filter_map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok()).collect() }
+
+fn confirm(title: &str, text: &str) -> bool {
+    rfd::MessageDialog::new().set_title(title).set_description(text).set_buttons(rfd::MessageButtons::YesNo).set_level(rfd::MessageLevel::Warning).show() == rfd::MessageDialogResult::Yes
+}
+
+fn err(msg: &str) {
+    rfd::MessageDialog::new().set_title("PDF Reader CP").set_description(msg).set_level(rfd::MessageLevel::Error).show();
+}
+
+// ---------- spooler Windows (GDI) ----------
+#[cfg(windows)]
+mod spool {
+    use windows::{core::{w, PCWSTR}, Win32::Foundation::HANDLE, Win32::Graphics::Gdi::*, Win32::Graphics::Printing::{ClosePrinter, DocumentPropertiesW, OpenPrinterW}, Win32::Storage::Xps::*, Win32::UI::WindowsAndMessaging::GetForegroundWindow};
+    pub struct Job { dc: HDC }
+
+    /// Crea il contesto di stampa, applicando (se presenti) le impostazioni del driver (DEVMODE).
+    unsafe fn make_dc(printer: &str, devmode: Option<&[u8]>) -> HDC {
+        let p: Vec<u16> = printer.encode_utf16().chain([0]).collect();
+        let mut al: Vec<u64> = Vec::new(); // copia allineata del DEVMODE
+        let dm: Option<*const DEVMODEW> = match devmode {
+            Some(d) if d.len() >= std::mem::size_of::<DEVMODEW>() => {
+                al = vec![0u64; (d.len() + 7) / 8];
+                std::ptr::copy_nonoverlapping(d.as_ptr(), al.as_mut_ptr() as *mut u8, d.len());
+                Some(al.as_ptr() as *const DEVMODEW)
+            }
+            _ => None,
+        };
+        let dc = CreateDCW(w!("WINSPOOL"), PCWSTR(p.as_ptr()), PCWSTR::null(), dm);
+        drop(al);
+        dc
+    }
+
+    /// Finestra "Proprieta'" del driver (fronte/retro, vassoio, qualita', colore...). Some(DEVMODE) se l'utente preme OK.
+    pub fn driver_dialog(printer: &str, current: Option<&[u8]>) -> Option<Vec<u8>> {
+        unsafe {
+            let name: Vec<u16> = printer.encode_utf16().chain([0]).collect();
+            let pn = PCWSTR(name.as_ptr());
+            let mut h = HANDLE::default();
+            OpenPrinterW(pn, &mut h, None).ok()?;
+            let hwnd = GetForegroundWindow();
+            let size = DocumentPropertiesW(hwnd, h, pn, None, None, 0);
+            let mut out = None;
+            if size > 0 {
+                let mut buf = vec![0u64; (size as usize + 7) / 8];
+                let dm = buf.as_mut_ptr() as *mut DEVMODEW;
+                let mut mode = 4u32 | 2u32; // DM_IN_PROMPT | DM_OUT_BUFFER
+                let mut input: Option<*const DEVMODEW> = None;
+                if let Some(c) = current {
+                    if c.len() == size as usize {
+                        std::ptr::copy_nonoverlapping(c.as_ptr(), buf.as_mut_ptr() as *mut u8, c.len());
+                        mode |= 8; // DM_IN_BUFFER: riparte dalle impostazioni attuali
+                        input = Some(dm as *const DEVMODEW);
+                    }
+                }
+                if DocumentPropertiesW(hwnd, h, pn, Some(dm), input, mode) == 1 { // IDOK
+                    out = Some(std::slice::from_raw_parts(buf.as_ptr() as *const u8, size as usize).to_vec());
+                }
+            }
+            let _ = ClosePrinter(h);
+            out
+        }
+    }
+
+    /// Dimensione fisica della carta (punti) con le impostazioni correnti del driver.
+    pub fn paper_pts(printer: &str, devmode: Option<&[u8]>) -> Option<(f32, f32)> {
+        unsafe {
+            let dc = make_dc(printer, devmode);
+            if dc.is_invalid() { return None; }
+            let (dx, dy) = (GetDeviceCaps(dc, LOGPIXELSX) as f32, GetDeviceCaps(dc, LOGPIXELSY) as f32);
+            let r = (GetDeviceCaps(dc, PHYSICALWIDTH) as f32 / dx * 72.0, GetDeviceCaps(dc, PHYSICALHEIGHT) as f32 / dy * 72.0);
+            let _ = DeleteDC(dc);
+            if r.0 > 50.0 && r.1 > 50.0 { Some(r) } else { None }
+        }
+    }
+
+    impl Job {
+        pub fn new(printer: &str, name: &str, devmode: Option<&[u8]>) -> Result<Job, String> {
+            unsafe {
+                let dc = make_dc(printer, devmode);
+                if dc.is_invalid() { return Err(format!("Impossibile aprire la stampante «{printer}»")); }
+                let n: Vec<u16> = name.encode_utf16().chain([0]).collect();
+                let di = DOCINFOW { cbSize: std::mem::size_of::<DOCINFOW>() as i32, lpszDocName: PCWSTR(n.as_ptr()), ..Default::default() };
+                if StartDocW(dc, &di) <= 0 { let _ = DeleteDC(dc); return Err("Avvio del lavoro di stampa non riuscito".into()); }
+                Ok(Job { dc })
+            }
+        }
+        /// Area stampabile in punti e risoluzione (dpi).
+        pub fn area(&self) -> (f32, f32, f32) {
+            unsafe {
+                let d = GetDeviceCaps(self.dc, LOGPIXELSX) as f32;
+                (GetDeviceCaps(self.dc, HORZRES) as f32 / d * 72.0, GetDeviceCaps(self.dc, VERTRES) as f32 / d * 72.0, d)
+            }
+        }
+        pub fn page(&self, bgra: &[u8], w: i32, h: i32, x: i32, y: i32, dw: i32, dh: i32) {
+            unsafe {
+                StartPage(self.dc);
+                let mut bi = BITMAPINFO::default();
+                bi.bmiHeader = BITMAPINFOHEADER { biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32, biWidth: w, biHeight: -h, biPlanes: 1, biBitCount: 32, biCompression: 0, ..Default::default() };
+                StretchDIBits(self.dc, x, y, dw, dh, 0, 0, w, h, Some(bgra.as_ptr() as *const _), &bi, DIB_RGB_COLORS, SRCCOPY);
+                EndPage(self.dc);
+            }
+        }
+    }
+    impl Drop for Job { fn drop(&mut self) { unsafe { EndDoc(self.dc); let _ = DeleteDC(self.dc); } } }
+}
+#[cfg(not(windows))]
+mod spool {
+    pub fn driver_dialog(_: &str, _: Option<&[u8]>) -> Option<Vec<u8>> { None }
+    pub fn paper_pts(_: &str, _: Option<&[u8]>) -> Option<(f32, f32)> { None }
+}
+
+// ---------- applicazione ----------
+struct Doc { path: PathBuf, name: String, sizes: Vec<(f32, f32)>, cur: usize, zoom: f32, fitpage: bool, tex: HashMap<(usize, i32), egui::TextureHandle>, text: HashMap<usize, Vec<TCh>> }
+#[derive(PartialEq, Clone, Copy)]
+enum Tab { Home, Doc(usize) }
+type PvKey = (usize, usize, Settings);
+/// Carattere del testo di una pagina: unicode + riquadro [sinistra, basso, destra, alto] in punti PDF.
+struct TCh { c: char, r: [f32; 4] }
+/// Selezione di testo: documento, pagina, indice del primo e dell'ultimo carattere.
+struct Sel { doc: usize, page: usize, a: usize, b: usize }
+
+struct App {
+    pdfium: Pdfium, docs: Vec<Doc>, tab: Tab,
+    st: Settings, draft: Settings, printers: Vec<String>,
+    show_print: bool, prev: usize, pv: Option<(PvKey, egui::TextureHandle)>,
+    msg: String, msg_at: Option<Instant>, logo: egui::TextureHandle, fs: bool, show_info: bool, scroll_tab: bool,
+    ipc: Option<std::sync::mpsc::Receiver<Ipc>>, started: bool, sel: Option<Sel>, paper: (f32, f32), paper_key: (String, String),
+}
+
+impl App {
+    fn new(cc: &eframe::CreationContext, listener: Option<std::net::TcpListener>, init: Vec<PathBuf>) -> Self {
+        let exe = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())).unwrap_or_default();
+        let lib = Pdfium::pdfium_platform_library_name_at_path(&exe);
+        let bind = match Pdfium::bind_to_library(lib).or_else(|_| Pdfium::bind_to_system_library()) {
+            Ok(b) => b,
+            Err(_) => { err("Libreria pdfium.dll non trovata. Reinstalla il programma."); std::process::exit(1) }
+        };
+        let mut v = egui::Visuals::light();
+        v.selection.bg_fill = ACCENT;
+        cc.egui_ctx.set_visuals(v);
+        let ic = eframe::icon_data::from_png_bytes(ICON).expect("icona");
+        let logo = cc.egui_ctx.load_texture("logo", egui::ColorImage::from_rgba_unmultiplied([ic.width as usize, ic.height as usize], &ic.rgba), Default::default());
+        let printers: Vec<String> = printers::get_printers().into_iter().map(|p| p.name).collect();
+        let mut st = Settings::load();
+        if !printers.contains(&st.printer) {
+            st.printer = printers::get_default_printer().map(|p| p.name).or_else(|| printers.first().cloned()).unwrap_or_default();
+        }
+        let ipc = listener.map(|l| { let (tx, rx) = std::sync::mpsc::channel(); serve(l, tx, cc.egui_ctx.clone()); rx });
+        let mut app = App { pdfium: Pdfium::new(bind), docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()) };
+        for a in init { app.open(a); }
+        app
+    }
+
+    fn toast(&mut self, s: String) { self.msg = s; self.msg_at = Some(Instant::now()); }
+
+    fn ensure_chars(&mut self, di: usize, page: usize) {
+        if di >= self.docs.len() || self.docs[di].text.contains_key(&page) { return; }
+        let v = load_chars(&self.pdfium, &self.docs[di].path, page);
+        let d = &mut self.docs[di];
+        if d.text.len() >= 20 { d.text.clear(); }
+        d.text.insert(page, v);
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let s = self.sel.as_ref()?;
+        let ch = self.docs.get(s.doc)?.text.get(&s.page)?;
+        let (lo, hi) = (s.a.min(s.b), s.a.max(s.b));
+        let t: String = ch.get(lo..=hi)?.iter().map(|c| c.c).filter(|c| *c >= ' ' || matches!(*c, '\n' | '\r' | '\t')).collect();
+        if t.trim().is_empty() { None } else { Some(t) }
+    }
+
+    fn open(&mut self, path: PathBuf) {
+        // gia' aperto: passa a quella scheda invece di duplicarla
+        if let Some(i) = self.docs.iter().position(|d| d.path == path) { self.tab = Tab::Doc(i); self.scroll_tab = true; return; }
+        let sizes: Option<Vec<(f32, f32)>> = self.pdfium.load_pdf_from_file(&path, None).ok()
+            .map(|d| d.pages().iter().map(|p| (p.width().value, p.height().value)).collect());
+        match sizes {
+            Some(s) if !s.is_empty() => {
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                self.docs.push(Doc { path, name, sizes: s, cur: 0, zoom: 1.0, fitpage: false, tex: HashMap::new(), text: HashMap::new() });
+                self.tab = Tab::Doc(self.docs.len() - 1);
+                self.scroll_tab = true;
+            }
+            _ => err(&format!("Impossibile aprire il file:\n{}", path.display())),
+        }
+    }
+
+    fn pick(&mut self) {
+        if let Some(v) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).set_title("Apri PDF").pick_files() {
+            for p in v { self.open(p); }
+        }
+    }
+
+    fn get_tex(&mut self, ctx: &egui::Context, di: usize, page: usize, width: i32) -> Option<egui::TextureHandle> {
+        if let Some(t) = self.docs[di].tex.get(&(page, width)) { return Some(t.clone()); }
+        let (w, h, d) = render(&self.pdfium, &self.docs[di].path, page, width)?;
+        let t = ctx.load_texture("page", egui::ColorImage::from_rgba_unmultiplied([w, h], &d), egui::TextureOptions::LINEAR);
+        let doc = &mut self.docs[di];
+        if doc.tex.len() >= 6 { doc.tex.clear(); }
+        doc.tex.insert((page, width), t.clone());
+        Some(t)
+    }
+
+    /// Stampa le schede indicate. `all_pages` = true: tutte le pagine di ogni scheda (STAMPA TUTTO).
+    #[cfg(windows)]
+    fn do_print(&self, idx: &[usize], all_pages: bool) -> Result<usize, String> {
+        if self.st.printer.is_empty() { return Err("Nessuna stampante selezionata".into()); }
+        let mut st = self.st.clone();
+        if all_pages { st.sel = PageSel::All; }
+        for &di in idx {
+            let d = &self.docs[di];
+            let pages = pages_for(&st, d.cur, d.sizes.len());
+            if pages.is_empty() { return Err(format!("Nessuna pagina da stampare in {}", d.name)); }
+            let nup = st.nup.max(1) as usize;
+            let sheets: Vec<Vec<usize>> = pages.chunks(nup).map(|c| c.to_vec()).collect();
+            let c = st.copies.max(1) as usize;
+            let order: Vec<usize> = if st.collate { (0..c).flat_map(|_| 0..sheets.len()).collect() } else { (0..sheets.len()).flat_map(|s| std::iter::repeat(s).take(c)).collect() };
+            let dm: Option<Vec<u8>> = if st.drv_printer == st.printer && !st.drv_mode.is_empty() { Some(from_hex(&st.drv_mode)) } else { None };
+            let job = spool::Job::new(&st.printer, &d.name, dm.as_deref()).or_else(|e| if dm.is_some() { spool::Job::new(&st.printer, &d.name, None) } else { Err(e) })?;
+            let (aw, ah, dpi) = job.area();
+            let mut last: Option<(usize, usize, usize, Vec<u8>)> = None;
+            for s in order {
+                if last.as_ref().map(|l| l.0) != Some(s) {
+                    let (w, h, mut b) = compose(&self.pdfium, d, &sheets[s], (aw, ah), &st, 300.0 / 72.0).ok_or("Rendering della pagina non riuscito")?;
+                    for q in b.chunks_exact_mut(4) { q.swap(0, 2); } // RGBA -> BGRA per GDI
+                    last = Some((s, w, h, b));
+                }
+                let l = last.as_ref().unwrap();
+                let f = dpi / 72.0;
+                job.page(&l.3, l.1 as i32, l.2 as i32, 0, 0, (aw * f) as i32, (ah * f) as i32);
+            }
+        }
+        Ok(idx.len())
+    }
+    #[cfg(not(windows))]
+    fn do_print(&self, _idx: &[usize], _all: bool) -> Result<usize, String> { Err("La stampa e' disponibile solo su Windows".into()) }
+
+    fn print_docs(&mut self, idx: &[usize], all_pages: bool) {
+        match self.do_print(idx, all_pages) {
+            Ok(n) => { let p = self.st.printer.clone(); self.toast(format!("Inviate {n} schede a «{p}»")); }
+            Err(e) => err(&e),
+        }
+    }
+
+    /// STAMPA TUTTO: tutte le schede aperte (ognuna per intero), in sequenza, con un solo messaggio di conferma.
+    fn print_all(&mut self) {
+        if self.docs.is_empty() { return; }
+        let (n, c) = (self.docs.len(), self.st.copies);
+        let pagine: usize = self.docs.iter().map(|d| d.sizes.len()).sum();
+        let testo = if c > 1 {
+            format!("Sicuro di voler stampare {c} copie dei file aperti?\n\n{n} schede ({pagine} pagine per copia) su «{}»", self.st.printer)
+        } else {
+            format!("Stampare tutte le {n} schede aperte ({pagine} pagine in totale) su «{}»?", self.st.printer)
+        };
+        if confirm("Stampa tutto", &testo) { let all: Vec<usize> = (0..n).collect(); self.print_docs(&all, true); }
+    }
+
+    /// Stampa subito la scheda indicata; con piu' di una copia chiede conferma.
+    fn print_one(&mut self, di: usize) {
+        let c = self.st.copies;
+        if c > 1 && !confirm("Stampa", &format!("Sicuro di voler stampare {c} copie del file?\n\n{}", self.docs[di].name)) { return; }
+        self.print_docs(&[di], false);
+    }
+
+    fn print_dialog(&mut self, ctx: &egui::Context, di: usize) {
+        let (mut open, mut go, mut cancel, mut drv, mut drv_reset) = (true, false, false, false, false);
+        let n = self.docs[di].sizes.len();
+        // le impostazioni del driver valgono solo per la stampante per cui sono state fatte
+        if self.draft.drv_printer != self.draft.printer { self.draft.drv_mode.clear(); }
+        let pk = (self.draft.printer.clone(), self.draft.drv_mode.clone());
+        if self.paper_key != pk {
+            let dm = if pk.1.is_empty() { None } else { Some(from_hex(&pk.1)) };
+            self.paper = spool::paper_pts(&pk.0, dm.as_deref()).unwrap_or(A4);
+            self.paper_key = pk;
+        }
+        let nup = self.draft.nup.max(1) as usize;
+        let pages = pages_for(&self.draft, self.docs[di].cur, n);
+        let sheets = (pages.len() + nup - 1) / nup;
+        let prev = self.prev.min(sheets.saturating_sub(1));
+        // anteprima: ricalcolata solo quando cambia qualcosa
+        let key: PvKey = (di, prev, self.draft.clone());
+        if self.pv.as_ref().map(|p| &p.0) != Some(&key) {
+            self.pv = None;
+            if let Some(chunk) = pages.chunks(nup).nth(prev) {
+                if let Some((w, h, d)) = compose(&self.pdfium, &self.docs[di], chunk, self.paper, &self.draft, 1.7) {
+                    let t = ctx.load_texture("pv", egui::ColorImage::from_rgba_unmultiplied([w, h], &d), egui::TextureOptions::LINEAR);
+                    self.pv = Some((key, t));
+                }
+            }
+        }
+        let maxh = (ctx.screen_rect().height() - 200.0).max(320.0);
+        egui::Window::new("Stampa").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            { // pulsanti e testi piu' grandi
+                let s = ui.style_mut();
+                s.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(17.0));
+                s.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(16.0));
+                s.spacing.button_padding = Vec2::new(14.0, 8.0);
+                s.spacing.interact_size.y = 32.0;
+                s.spacing.icon_width = 22.0;
+                s.spacing.slider_width = 220.0;
+            }
+            ui.horizontal_top(|ui| {
+                egui::ScrollArea::vertical().max_height(maxh).auto_shrink([true, true]).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(440.0);
+                        ui.group(|ui| {
+                            ui.label(RichText::new("Stampante").strong().color(ACCENT));
+                            egui::ComboBox::from_id_salt("pr").width(400.0).selected_text(self.draft.printer.clone()).show_ui(ui, |ui| {
+                                for p in &self.printers { ui.selectable_value(&mut self.draft.printer, p.clone(), p); }
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.add(Button::new("Impostazioni driver stampante…").min_size(Vec2::new(300.0, 38.0)))
+                                    .on_hover_text("Apre le proprietà del driver: fronte/retro, vassoio, qualità, colore, finitura...").clicked() { drv = true; }
+                                if !self.draft.drv_mode.is_empty() && ui.add(Button::new("Azzera").min_size(Vec2::new(80.0, 38.0))).on_hover_text("Torna alle impostazioni predefinite del driver").clicked() { drv_reset = true; }
+                            });
+                            if !self.draft.drv_mode.is_empty() { ui.label(RichText::new("Impostazioni del driver attive").weak()); }
+                            ui.horizontal(|ui| {
+                                ui.label("Copie");
+                                if ui.add(Button::new(RichText::new("-").size(22.0)).min_size(Vec2::new(44.0, 38.0))).clicked() { self.draft.copies = self.draft.copies.saturating_sub(1).max(1); }
+                                ui.add(egui::DragValue::new(&mut self.draft.copies).range(1..=99));
+                                if ui.add(Button::new(RichText::new("+").size(22.0)).min_size(Vec2::new(44.0, 38.0))).clicked() { self.draft.copies = (self.draft.copies + 1).min(99); }
+                                ui.checkbox(&mut self.draft.collate, "Fascicola");
+                            });
+                        });
+                        ui.group(|ui| {
+                            ui.label(RichText::new(format!("Intervallo pagine · {n} totali")).strong().color(ACCENT));
+                            ui.horizontal(|ui| {
+                                ui.radio_value(&mut self.draft.sel, PageSel::All, "Tutto");
+                                ui.radio_value(&mut self.draft.sel, PageSel::Current, "Corrente");
+                                ui.radio_value(&mut self.draft.sel, PageSel::Custom, "Personalizzato");
+                            });
+                            if self.draft.sel == PageSel::Custom { ui.text_edit_singleline(&mut self.draft.custom); }
+                        });
+                        ui.group(|ui| {
+                            ui.label(RichText::new("Pagine per foglio e scala").strong().color(ACCENT));
+                            ui.horizontal(|ui| {
+                                ui.label("Pagine per foglio");
+                                egui::ComboBox::from_id_salt("nu").width(90.0).selected_text(format!("{} su 1", self.draft.nup)).show_ui(ui, |ui| {
+                                    for k in NUPS { ui.selectable_value(&mut self.draft.nup, k, format!("{k} su 1")); }
+                                });
+                            });
+                            ui.add_enabled_ui(self.draft.nup > 1, |ui| ui.checkbox(&mut self.draft.border, "Bordo attorno alle pagine"));
+                            ui.add_enabled_ui(self.draft.nup == 1, |ui| {
+                                ui.radio_value(&mut self.draft.scale, ScaleMode::Fit, "Adatta alla pagina");
+                                ui.radio_value(&mut self.draft.scale, ScaleMode::Actual, "Dimensioni reali (100%)");
+                                ui.horizontal(|ui| {
+                                    ui.radio_value(&mut self.draft.scale, ScaleMode::Custom, "Proporzione personalizzata");
+                                    ui.add_enabled(self.draft.scale == ScaleMode::Custom, egui::DragValue::new(&mut self.draft.pct).range(25..=200).suffix(" %"));
+                                });
+                            });
+                            ui.checkbox(&mut self.draft.rotate, "Ruota automaticamente");
+                            ui.checkbox(&mut self.draft.center, "Centra automaticamente");
+                        });
+                        ui.group(|ui| {
+                            ui.label(RichText::new("Colore e luminosità").strong().color(ACCENT));
+                            ui.horizontal(|ui| {
+                                ui.radio_value(&mut self.draft.color, ColorMode::Color, "Colori");
+                                ui.radio_value(&mut self.draft.color, ColorMode::Gray, "Scala di grigi");
+                                ui.radio_value(&mut self.draft.color, ColorMode::Bw, "Bianco e nero");
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Scuro");
+                                ui.add(egui::Slider::new(&mut self.draft.bright, -100..=100).show_value(false));
+                                ui.label("Chiaro");
+                                if ui.add(Button::new("0").min_size(Vec2::new(40.0, 34.0))).on_hover_text("Azzera chiaro/scuro").clicked() { self.draft.bright = 0; }
+                            });
+                        });
+                        ui.label(RichText::new("Le impostazioni vengono ricordate per «Stampa subito».").weak());
+                    });
+                });
+                ui.vertical(|ui| {
+                    let (pw, ph) = self.paper;
+                    let mm = |p: f32| (p / 72.0 * 25.4).round() as i32;
+                    ui.label(format!("Carta: {} × {} mm", mm(pw), mm(ph)));
+                    let k = (340.0 / pw).min(481.0 / ph);
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(pw * k, ph * k), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 0.0, Color32::WHITE);
+                    if let Some((_, t)) = &self.pv {
+                        ui.painter().image(t.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                    }
+                    ui.painter().rect_stroke(rect, 0.0, (1.0, Color32::GRAY));
+                    ui.horizontal_wrapped(|ui| {
+                        for p in 0..sheets.min(40) { if ui.selectable_label(prev == p, (p + 1).to_string()).clicked() { self.prev = p; } }
+                    });
+                    ui.label(format!("Foglio {} di {} · {} pag. per foglio", prev + 1, sheets.max(1), nup));
+                });
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.add(Button::new(RichText::new("Stampa").size(19.0).strong().color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(160.0, 44.0))).clicked() { go = true; }
+                if ui.add(Button::new(RichText::new("Annulla").size(19.0)).min_size(Vec2::new(130.0, 44.0))).clicked() { cancel = true; }
+            });
+        });
+        if drv {
+            let cur = if self.draft.drv_printer == self.draft.printer && !self.draft.drv_mode.is_empty() { Some(from_hex(&self.draft.drv_mode)) } else { None };
+            if let Some(dm) = spool::driver_dialog(&self.draft.printer, cur.as_deref()) {
+                self.draft.drv_printer = self.draft.printer.clone();
+                self.draft.drv_mode = to_hex(&dm);
+            } else if !cfg!(windows) { self.toast("Le impostazioni del driver sono disponibili solo su Windows".into()); }
+        }
+        if drv_reset { self.draft.drv_mode.clear(); }
+        if go {
+            let c = self.draft.copies;
+            let nome = self.docs[di].name.clone();
+            if c > 1 && !confirm("Stampa", &format!("Sicuro di voler stampare {c} copie del file?\n\n{nome}")) {
+                // risposta "No": resta aperta la finestra di stampa
+            } else { self.st = self.draft.clone(); self.st.save(); self.show_print = false; self.print_docs(&[di], false); }
+        }
+        if cancel || !open { self.show_print = false; }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Ic { Preview, Quick, All, Min, Max, Close }
+
+/// Pulsante-icona disegnato a mano (nessun font di icone necessario).
+fn icon_btn(ui: &mut egui::Ui, ic: Ic, tip: &str, enabled: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(30.0), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+    let hov = enabled && resp.hovered();
+    let p = ui.painter();
+    if hov { p.rect_filled(rect, 4.0, if ic == Ic::Close { Color32::from_rgb(232, 17, 35) } else { Color32::from_gray(205) }); }
+    let col = if !enabled { Color32::from_gray(160) } else if ic == Ic::Close && hov { Color32::WHITE } else if ic == Ic::All { ACCENT } else { Color32::from_gray(35) };
+    let st = egui::Stroke::new(1.6_f32, col);
+    let c = rect.center();
+    let v = |x: f32, y: f32| c + Vec2::new(x, y);
+    match ic {
+        Ic::Min => { p.line_segment([v(-5.0, 4.0), v(5.0, 4.0)], st); }
+        Ic::Max => { p.rect_stroke(egui::Rect::from_center_size(c, Vec2::splat(10.0)), 0.0, st); }
+        Ic::Close => { p.line_segment([v(-5.0, -5.0), v(5.0, 5.0)], st); p.line_segment([v(-5.0, 5.0), v(5.0, -5.0)], st); }
+        _ => {
+            if ic == Ic::All { p.rect_stroke(egui::Rect::from_min_max(v(-2.0, -12.0), v(8.0, -4.0)), 0.0, st); } // pagine impilate
+            p.rect_stroke(egui::Rect::from_min_max(v(-5.0, -9.0), v(5.0, -1.0)), 0.0, st);   // foglio in alto
+            p.rect_stroke(egui::Rect::from_min_max(v(-10.0, -1.0), v(10.0, 7.0)), 2.0, st);  // corpo stampante
+            let out = egui::Rect::from_min_max(v(-5.0, 4.0), v(5.0, 11.0));
+            p.rect_filled(out, 0.0, BAR);
+            p.rect_stroke(out, 0.0, st);                                                     // foglio in uscita
+            match ic {
+                Ic::Preview => { p.circle_stroke(v(8.0, 8.0), 3.5, st); p.line_segment([v(10.5, 10.5), v(13.0, 13.0)], st); }
+                Ic::Quick => { p.add(egui::Shape::convex_polygon(vec![v(7.0, 3.0), v(7.0, 13.0), v(14.0, 8.0)], col, egui::Stroke::NONE)); }
+                _ => {}
+            }
+        }
+    }
+    resp.on_hover_text(tip).clicked()
+}
+
+/// Scheda con la "×" di chiusura integrata. Restituisce (risposta, chiusura_richiesta).
+fn tab_widget(ui: &mut egui::Ui, text: &str, selected: bool, tip: &str) -> (egui::Response, bool) {
+    let col = if selected { Color32::from_gray(20) } else { Color32::from_gray(70) };
+    let galley = ui.painter().layout_no_wrap(text.to_string(), egui::TextStyle::Button.resolve(ui.style()), col);
+    let (pad, xw) = (10.0_f32, 18.0_f32);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(pad + galley.size().x + 8.0 + xw + 4.0, 28.0), egui::Sense::click());
+    let xr = egui::Rect::from_center_size(egui::pos2(rect.right() - 4.0 - xw / 2.0, rect.center().y), Vec2::splat(xw));
+    let hover_x = resp.hovered() && ui.input(|i| i.pointer.hover_pos()).map_or(false, |p| xr.contains(p));
+    let close = resp.clicked() && resp.interact_pointer_pos().map_or(false, |p| xr.contains(p));
+    let p = ui.painter();
+    let bg = if selected { Color32::WHITE } else if resp.hovered() { Color32::from_gray(220) } else { Color32::from_gray(205) };
+    p.rect_filled(rect, egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }, bg);
+    if selected { p.rect_filled(egui::Rect::from_min_size(rect.min, Vec2::new(rect.width(), 2.0)), 0.0, ACCENT); }
+    p.galley(egui::pos2(rect.left() + pad, rect.center().y - galley.size().y / 2.0), galley.clone(), col);
+    if hover_x { p.rect_filled(xr, 4.0, Color32::from_rgb(232, 17, 35)); }
+    let st = egui::Stroke::new(1.4_f32, if hover_x { Color32::WHITE } else { Color32::from_gray(90) });
+    let c = xr.center();
+    p.line_segment([c + Vec2::new(-3.5, -3.5), c + Vec2::new(3.5, 3.5)], st);
+    p.line_segment([c + Vec2::new(-3.5, 3.5), c + Vec2::new(3.5, -3.5)], st);
+    (resp.on_hover_text(tip), close)
+}
+
+/// Voce di menu: chiude il menu al clic.
+fn mi(ui: &mut egui::Ui, text: &str, shortcut: &str, en: bool) -> bool {
+    let c = ui.add_enabled(en, Button::new(text).shortcut_text(shortcut)).clicked();
+    if c { ui.close_menu(); }
+    c
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
+        let before = self.st.clone();
+        if !self.started { self.started = true; ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true)); } // si apre sempre ingrandita
+        // PDF inviati da un secondo avvio del programma: si aprono qui, in nuove schede
+        let msgs: Vec<Ipc> = self.ipc.as_ref().map(|r| r.try_iter().collect::<Vec<Ipc>>()).unwrap_or_default();
+        if !msgs.is_empty() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        for m in msgs { if let Ipc::Open(p) = m { self.open(p); } }
+        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+        for p in dropped { self.open(p); }
+        let (mut o, mut pd, mut q, mut all) = (false, false, false, false);
+        ctx.input_mut(|i| {
+            o |= i.consume_key(egui::Modifiers::COMMAND, egui::Key::O);
+            q |= i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::P);
+            pd |= i.consume_key(egui::Modifiers::COMMAND, egui::Key::P);
+        });
+        if ctx.input(|i| i.key_pressed(egui::Key::F11)) { self.fs = !self.fs; ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fs)); }
+        if let Tab::Doc(i) = self.tab {
+            if !self.show_print && !ctx.wants_keyboard_input() {
+                let (nx, pv, z) = ctx.input(|i| (i.key_pressed(egui::Key::PageDown) || i.key_pressed(egui::Key::ArrowRight), i.key_pressed(egui::Key::PageUp) || i.key_pressed(egui::Key::ArrowLeft), i.zoom_delta()));
+                if let Some(d) = self.docs.get_mut(i) {
+                    if nx && d.cur + 1 < d.sizes.len() { d.cur += 1; }
+                    if pv && d.cur > 0 { d.cur -= 1; }
+                    if z != 1.0 { d.zoom = (d.zoom * z).clamp(0.3, 4.0); }
+                }
+            }
+        }
+
+        // ---- UNICA barra = barra del titolo: [icona][File][schede ............][trascina][stampa][- o x] ----
+        let (mut ctrl_w, mut next_t, mut prev_t) = (false, false, false);
+        ctx.input_mut(|i| {
+            prev_t = i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Tab);
+            next_t = i.consume_key(egui::Modifiers::COMMAND, egui::Key::Tab);
+            ctrl_w = i.consume_key(egui::Modifiers::COMMAND, egui::Key::W);
+        });
+        let typing = ctx.wants_keyboard_input();
+        let mut sel_all = false;
+        let mut no_text = false;
+        let mut copy_req = !typing && ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
+        if !typing { ctx.input_mut(|i| { sel_all = i.consume_key(egui::Modifiers::COMMAND, egui::Key::A); }); }
+        let n_docs = self.docs.len();
+        if n_docs > 0 {
+            let i = if let Tab::Doc(i) = self.tab { i } else { 0 };
+            if next_t { self.tab = Tab::Doc((i + 1) % n_docs); self.scroll_tab = true; }
+            if prev_t { self.tab = Tab::Doc((i + n_docs - 1) % n_docs); self.scroll_tab = true; }
+        }
+        let has_docs = n_docs > 0;
+        let cur_doc = if let Tab::Doc(i) = self.tab { Some(i) } else { None };
+        let maxed = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let mut close: Option<usize> = None;
+        let (mut close_all, mut show_info, mut quit, mut fs_toggle) = (false, false, false, false);
+        let want_scroll = std::mem::take(&mut self.scroll_tab);
+        egui::TopBottomPanel::top("top")
+            .frame(egui::Frame::none().fill(BAR).inner_margin(egui::Margin::symmetric(6.0, 3.0)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if icon_btn(ui, Ic::Close, "Chiudi", true) { quit = true; }
+                        if icon_btn(ui, Ic::Max, if maxed { "Ripristina" } else { "Massimizza" }, true) { ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maxed)); }
+                        if icon_btn(ui, Ic::Min, "Riduci a icona", true) { ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); }
+                        ui.separator();
+                        all |= icon_btn(ui, Ic::All, "STAMPA TUTTO: tutte le schede aperte, ognuna per intero", has_docs);
+                        q |= icon_btn(ui, Ic::Quick, "Stampa subito: scheda corrente, ultime impostazioni (Ctrl+Maiusc+P)", cur_doc.is_some());
+                        pd |= icon_btn(ui, Ic::Preview, "Stampa… con anteprima (Ctrl+P)", cur_doc.is_some());
+                        let (_, drag) = ui.allocate_exact_size(Vec2::new(36.0, 28.0), egui::Sense::click_and_drag());
+                        if drag.drag_started() { ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag); }
+                        if drag.double_clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maxed)); }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.image(egui::load::SizedTexture::new(self.logo.id(), Vec2::splat(24.0)));
+                            ui.menu_button(RichText::new("File").strong().color(ACCENT), |ui| {
+                                ui.set_min_width(260.0);
+                                if mi(ui, "Apri…", "Ctrl+O", true) { o = true; }
+                                if mi(ui, "Chiudi scheda", "Ctrl+W", cur_doc.is_some()) { ctrl_w = true; }
+                                if mi(ui, "Chiudi tutte le schede", "", has_docs) { close_all = true; }
+                                ui.separator();
+                                if mi(ui, "Copia testo selezionato", "Ctrl+C", cur_doc.is_some()) { copy_req = true; }
+                                if mi(ui, "Seleziona tutto il testo", "Ctrl+A", cur_doc.is_some()) { sel_all = true; }
+                                ui.separator();
+                                if mi(ui, "Stampa…", "Ctrl+P", cur_doc.is_some()) { pd = true; }
+                                if mi(ui, "Stampa subito", "Ctrl+Maiusc+P", cur_doc.is_some()) { q = true; }
+                                if mi(ui, "STAMPA TUTTO", "", has_docs) { all = true; }
+                                ui.menu_button("Stampante", |ui| {
+                                    for p in &self.printers {
+                                        if ui.selectable_label(self.st.printer == *p, p.as_str()).clicked() { self.st.printer = p.clone(); ui.close_menu(); }
+                                    }
+                                });
+                                ui.menu_button("Pagine per foglio", |ui| {
+                                    for k in NUPS {
+                                        if ui.selectable_label(self.st.nup == k, format!("{k} su 1")).clicked() { self.st.nup = k; ui.close_menu(); }
+                                    }
+                                });
+                                ui.separator();
+                                if mi(ui, "Schermo intero", "F11", true) { fs_toggle = true; }
+                                ui.separator();
+                                if mi(ui, "Info", "", true) { show_info = true; }
+                                if mi(ui, "Esci", "", true) { quit = true; }
+                            });
+                            egui::ScrollArea::horizontal().id_salt("tabs").show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 2.0;
+                                    for i in 0..self.docs.len() {
+                                        let sel = self.tab == Tab::Doc(i);
+                                        let (r, x) = tab_widget(ui, &short(&self.docs[i].name, 24), sel, &self.docs[i].name);
+                                        if x || r.middle_clicked() { close = Some(i); } else if r.clicked() { self.tab = Tab::Doc(i); }
+                                        if sel && want_scroll { r.scroll_to_me(Some(egui::Align::Center)); }
+                                    }
+                                });
+                            });
+                        });
+                    });
+                });
+            });
+        if quit { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+        if fs_toggle { self.fs = !self.fs; ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fs)); }
+        if show_info { self.show_info = true; }
+        if ctrl_w { close = cur_doc; }
+        if close_all { self.docs.clear(); self.tab = Tab::Home; self.show_print = false; self.pv = None; }
+        if let Some(i) = close.filter(|&i| i < self.docs.len()) {
+            self.docs.remove(i);
+            self.tab = match self.tab { Tab::Doc(j) if j == i => Tab::Home, Tab::Doc(j) if j > i => Tab::Doc(j - 1), t => t };
+            self.show_print = false; self.pv = None;
+        }
+
+        // ---- testo selezionabile: carica i caratteri della pagina e gestisce "seleziona tutto" ----
+        if close_all || close.is_some() { self.sel = None; }
+        if let Tab::Doc(i) = self.tab {
+            if i < self.docs.len() {
+                let cur = self.docs[i].cur;
+                if self.sel.as_ref().map_or(false, |s| s.doc != i || s.page != cur) { self.sel = None; }
+                self.ensure_chars(i, cur);
+                if sel_all {
+                    let boxed: Vec<usize> = self.docs[i].text[&cur].iter().enumerate().filter(|(_, c)| c.r[2] - c.r[0] > 0.01 && c.r[3] - c.r[1] > 0.01).map(|(k, _)| k).collect();
+                    self.sel = match (boxed.first(), boxed.last()) { (Some(&a), Some(&b)) => Some(Sel { doc: i, page: cur, a, b }), _ => { no_text = true; None } };
+                }
+            }
+        } else { self.sel = None; }
+
+        // ---- area documento: occupa tutto lo spazio rimasto ----
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::from_rgb(107, 114, 128))).show(ctx, |ui| match self.tab {
+            Tab::Home => {
+                egui::Frame::none().fill(Color32::WHITE).show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(80.0);
+                        ui.image(egui::load::SizedTexture::new(self.logo.id(), Vec2::splat(96.0)));
+                        ui.heading("PDF Reader CP");
+                        ui.label("Trascina qui un PDF oppure premi Apri.");
+                        if ui.button("Apri PDF…").clicked() { o = true; }
+                    });
+                });
+            }
+            Tab::Doc(i) => {
+                if i >= self.docs.len() { return; }
+                let (cur, zoom, fp) = (self.docs[i].cur, self.docs[i].zoom, self.docs[i].fitpage);
+                let (pw, ph) = self.docs[i].sizes[cur];
+                let av = ui.available_size();
+                let base = if fp { (av.x - 16.0).min((av.y - 8.0) * pw / ph) } else { av.x - 16.0 };
+                let w = (base * zoom).max(50.0);
+                let h = w * ph / pw;
+                let bucket = (((w * ctx.pixels_per_point()) as i32).clamp(800, 3200) + 399) / 400 * 400;
+                if let Some(t) = self.get_tex(ctx, i, cur, bucket) {
+                    let empty: Vec<TCh> = Vec::new();
+                    let chars = self.docs[i].text.get(&cur).unwrap_or(&empty);
+                    let sel = &mut self.sel;
+                    egui::ScrollArea::both().id_salt((i, cur)).auto_shrink([false; 2]).drag_to_scroll(false).show(ui, |ui| {
+                        ui.add_space(8.0);
+                        let img = egui::Image::new(egui::load::SizedTexture::new(t.id(), Vec2::new(w, h))).sense(egui::Sense::click_and_drag());
+                        let resp = ui.vertical_centered(|ui| ui.add(img)).inner;
+                        let to_pt = |p: egui::Pos2| ((p.x - resp.rect.min.x) / w * pw, ph - (p.y - resp.rect.min.y) / h * ph);
+                        if resp.hovered() && !chars.is_empty() { ctx.set_cursor_icon(egui::CursorIcon::Text); }
+                        if resp.drag_started() {
+                            if chars.is_empty() { no_text = true; }
+                            *sel = resp.interact_pointer_pos().and_then(|p| { let (x, y) = to_pt(p); hit(chars, x, y) }).map(|k| Sel { doc: i, page: cur, a: k, b: k });
+                        } else if resp.dragged() {
+                            if let (Some(p), Some(s)) = (resp.interact_pointer_pos(), sel.as_mut()) {
+                                let (x, y) = to_pt(p);
+                                if let Some(k) = hit(chars, x, y) { s.b = k; }
+                            }
+                        } else if resp.clicked() { *sel = None; }
+                        if let Some(s) = sel.as_ref() {
+                            let (lo, hi) = (s.a.min(s.b), s.a.max(s.b));
+                            for c in chars.iter().skip(lo).take(hi + 1 - lo) {
+                                if c.r[2] - c.r[0] < 0.01 { continue; }
+                                let r = egui::Rect::from_min_max(
+                                    egui::pos2(resp.rect.min.x + c.r[0] / pw * w, resp.rect.min.y + (ph - c.r[3]) / ph * h),
+                                    egui::pos2(resp.rect.min.x + c.r[2] / pw * w, resp.rect.min.y + (ph - c.r[1]) / ph * h));
+                                ui.painter().rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(51, 144, 255, 90));
+                            }
+                        }
+                        resp.context_menu(|ui| {
+                            if ui.button("Copia").clicked() { copy_req = true; ui.close_menu(); }
+                            if ui.button("Seleziona tutto").clicked() {
+                                let mut it = chars.iter().enumerate().filter(|(_, c)| c.r[2] - c.r[0] > 0.01 && c.r[3] - c.r[1] > 0.01).map(|(k, _)| k);
+                                if let Some(a) = it.next() { let b = it.last().unwrap_or(a); *sel = Some(Sel { doc: i, page: cur, a, b }); }
+                                ui.close_menu();
+                            }
+                        });
+                    });
+                }
+            }
+        });
+
+        if no_text { self.toast("Questa pagina non contiene testo selezionabile (immagine scansionata?)".into()); }
+        if copy_req {
+            match self.selected_text() {
+                Some(t) => { ctx.copy_text(t); self.toast("Testo copiato negli appunti".into()); }
+                None => self.toast("Seleziona prima del testo: trascina il mouse sulla pagina".into()),
+            }
+        }
+
+        // ---- comandi pagina/zoom: barra fluttuante in basso (non toglie spazio al documento) ----
+        if let Tab::Doc(i) = self.tab {
+            if let Some(d) = self.docs.get_mut(i) {
+                egui::Area::new(egui::Id::new("nav")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -14.0]).show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.button("<").clicked() && d.cur > 0 { d.cur -= 1; }
+                            ui.label(format!("{} / {}", d.cur + 1, d.sizes.len()));
+                            if ui.button(">").clicked() && d.cur + 1 < d.sizes.len() { d.cur += 1; }
+                            ui.separator();
+                            if ui.button("-").clicked() { d.zoom = (d.zoom - 0.1).max(0.3); }
+                            ui.label(format!("{:.0}%", d.zoom * 100.0));
+                            if ui.button("+").clicked() { d.zoom = (d.zoom + 0.1).min(4.0); }
+                            if ui.button(if d.fitpage { "Pagina" } else { "Larghezza" }).on_hover_text("Adatta a larghezza / pagina intera").clicked() { d.fitpage = !d.fitpage; d.zoom = 1.0; }
+                        });
+                    });
+                });
+            }
+        }
+        if let Some(t) = self.msg_at {
+            if t.elapsed().as_secs_f32() < 4.0 {
+                egui::Area::new(egui::Id::new("toast")).anchor(egui::Align2::LEFT_BOTTOM, [14.0, -14.0]).show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| { ui.label(&self.msg); });
+                });
+                ctx.request_repaint_after(Duration::from_millis(500));
+            } else { self.msg_at = None; }
+        }
+
+        // ---- azioni ----
+        if o { self.pick(); }
+        if let Some(i) = cur_doc.filter(|&i| i < self.docs.len()) {
+            if pd { self.show_print = true; self.draft = self.st.clone(); self.prev = 0; self.pv = None; }
+            if q { self.print_one(i); }
+        }
+        if all { self.print_all(); }
+        if self.show_print { if let Tab::Doc(i) = self.tab { self.print_dialog(ctx, i); } else { self.show_print = false; } }
+        if self.show_info {
+            let mut open = true;
+            egui::Window::new("Informazioni").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.image(egui::load::SizedTexture::new(self.logo.id(), Vec2::splat(72.0)));
+                    ui.heading("PDF Reader CP");
+                    ui.label("Programma opensource progettato da Peppe CP con l'aiuto della IA.");
+                    ui.label(RichText::new("Versione 1.0").weak());
+                });
+            });
+            if !open { self.show_info = false; }
+        }
+        if self.st != before { self.st.save(); } // stampante / "N su 1" scelti nella barra restano per "Stampa subito"
+    }
+}
+
+// ---------- istanza unica: un secondo avvio passa i PDF al programma gia' aperto ----------
+const IPC_ADDR: &str = "127.0.0.1:47653"; // solo localhost
+const IPC_HELLO: &str = "PDFReaderCP/1";
+enum Ipc { Open(PathBuf), Focus }
+
+/// Ok(Some(listener)) = siamo la prima istanza. Err(()) = c'e' gia' un'istanza e le abbiamo passato i file: uscire.
+fn single_instance(args: &[PathBuf]) -> Result<Option<std::net::TcpListener>, ()> {
+    match std::net::TcpListener::bind(IPC_ADDR) {
+        Ok(l) => Ok(Some(l)),
+        Err(_) => if forward(args) { Err(()) } else { Ok(None) }, // porta occupata da altro: si parte comunque
+    }
+}
+
+fn forward(args: &[PathBuf]) -> bool {
+    let Ok(addr) = IPC_ADDR.parse::<std::net::SocketAddr>() else { return false };
+    let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(800)) else { return false };
+    let _ = s.set_read_timeout(Some(Duration::from_millis(2000)));
+    #[cfg(windows)]
+    unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(u32::MAX); } // permette all'altra finestra di portarsi in primo piano
+    let mut msg = format!("{IPC_HELLO}\n");
+    if args.is_empty() { msg.push_str("FOCUS\n"); }
+    for a in args { msg.push_str(&format!("OPEN\t{}\n", a.to_string_lossy())); }
+    msg.push_str("END\n");
+    if s.write_all(msg.as_bytes()).is_err() { return false; }
+    let mut r = String::new();
+    BufReader::new(s).read_line(&mut r).is_ok() && r.trim() == IPC_HELLO
+}
+
+fn serve(lst: std::net::TcpListener, tx: std::sync::mpsc::Sender<Ipc>, ctx: egui::Context) {
+    std::thread::spawn(move || {
+        for s in lst.incoming().flatten() {
+            let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut rd = BufReader::new(&s);
+            let mut line = String::new();
+            if rd.read_line(&mut line).is_err() || line.trim() != IPC_HELLO { continue; }
+            loop {
+                line.clear();
+                if rd.read_line(&mut line).unwrap_or(0) == 0 { break; }
+                let l = line.trim_end_matches(['\r', '\n']);
+                if l == "END" { break; }
+                if l == "FOCUS" { let _ = tx.send(Ipc::Focus); }
+                else if let Some(p) = l.strip_prefix("OPEN\t") {
+                    let p = PathBuf::from(p);
+                    if p.is_file() { let _ = tx.send(Ipc::Open(p)); }
+                }
+            }
+            let _ = (&s).write_all(format!("{IPC_HELLO}\n").as_bytes());
+            ctx.request_repaint();
+        }
+    });
+}
+
+fn main() -> eframe::Result<()> {
+    let args: Vec<PathBuf> = std::env::args().skip(1).map(|a| { let p = PathBuf::from(a); std::path::absolute(&p).unwrap_or(p) }).collect();
+    // se il programma e' gia' aperto, i PDF si aprono li' (in nuove schede) e questo processo termina
+    let listener = match single_instance(&args) { Ok(l) => l, Err(()) => return Ok(()) };
+    let icon = eframe::icon_data::from_png_bytes(ICON).expect("icona");
+    let opts = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 760.0]).with_min_inner_size([800.0, 500.0]).with_maximized(true).with_decorations(false).with_icon(icon).with_title("PDF Reader CP"),
+        ..Default::default()
+    };
+    eframe::run_native("PDF Reader CP", opts, Box::new(move |cc| Ok(Box::new(App::new(cc, listener, args)))))
+}
