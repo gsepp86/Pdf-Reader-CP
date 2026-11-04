@@ -1,0 +1,35 @@
+name: Build Installer
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Ottieni il codice sorgente
+      uses: actions/checkout@v4
+
+    - name: Installa Rust (MSVC)
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Compila il progetto in modalità Release
+      run: cargo build --release
+
+    - name: Installa NSIS
+      run: choco install nsis -y
+
+    - name: Compila lo script NSIS
+      run: |
+        # Assicurati che la cartella dist esista
+        if (!(Test-Path "dist")) { New-Item -ItemType Directory -Path "dist" }
+        & "C:\Program Files (x86)\NSIS\makensis.exe" installer\setup.nsi
+
+    - name: Salva il file di setup generato
+      uses: actions/upload-artifact@v4
+      with:
+        name: Setup-Visualizzatore-Immagini-CP
+        path: dist/*.exe
