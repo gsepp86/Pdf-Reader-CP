@@ -5,7 +5,7 @@ use pdfium_render::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf, time::{Duration, Instant}};
 use std::io::{BufRead as _, BufReader, Write as _};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 const ACCENT: Color32 = Color32::from_rgb(198, 47, 47);
 const BAR: Color32 = Color32::from_rgb(229, 231, 235);
@@ -25,10 +25,10 @@ enum ColorMode { Color, Gray, Bw }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
-struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, border: bool, color: ColorMode, bright: i32, drv_printer: String, drv_mode: String }
+struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, border: bool, color: ColorMode, bright: i32, drv_printer: String, drv_mode: String, swap_rb: bool }
 impl Default for Settings {
     fn default() -> Self {
-        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, border: true, color: ColorMode::Color, bright: 0, drv_printer: String::new(), drv_mode: String::new() }
+        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, border: true, color: ColorMode::Color, bright: 0, drv_printer: String::new(), drv_mode: String::new(), swap_rb: false }
     }
 }
 impl Settings {
@@ -79,6 +79,11 @@ fn rot90(w: usize, h: usize, d: &[u8]) -> (usize, usize, Vec<u8>) {
 
 /// true se i byte grezzi restituiti da PDFium sono BGRA (da scambiare in RGBA). Impostato all'avvio da detect_byte_order().
 static BGRA_RAW: AtomicBool = AtomicBool::new(false);
+/// Inversione manuale rosso/blu (File > Correggi colori): si somma al rilevamento automatico.
+static SWAP_MANUAL: AtomicBool = AtomicBool::new(false);
+/// Diagnostica del rilevamento: esito e pixel letto dalla prova "rosso puro".
+static PROBE_OK: AtomicBool = AtomicBool::new(false);
+static PROBE_PX: AtomicU32 = AtomicU32::new(0);
 
 /// Rileva l'ordine dei byte di PDFium disegnando un minuscolo PDF tutto rosso: cosi' i colori sono giusti con qualsiasi versione della libreria.
 fn detect_byte_order(pdfium: &Pdfium) {
@@ -91,6 +96,8 @@ fn detect_byte_order(pdfium: &Pdfium) {
     let i = ((h / 2) * w + w / 2) * 4;
     if raw.len() < i + 4 { return; }
     // rosso puro: in RGBA e' [255,0,0], in BGRA e' [0,0,255]
+    PROBE_PX.store(u32::from_le_bytes([raw[i], raw[i + 1], raw[i + 2], raw[i + 3]]), Ordering::Relaxed);
+    PROBE_OK.store(true, Ordering::Relaxed);
     BGRA_RAW.store(raw[i] < 128 && raw[i + 2] > 128, Ordering::Relaxed);
 }
 
@@ -100,7 +107,7 @@ fn render(doc: &PdfDocument, page: usize, width: i32) -> Option<(usize, usize, V
     let bmp = p.render_with_config(&PdfRenderConfig::new().set_target_width(width)).ok()?;
     let (w, h) = (bmp.width() as usize, bmp.height() as usize);
     let mut d = bmp.as_raw_bytes().to_vec();
-    let bgra = BGRA_RAW.load(Ordering::Relaxed);
+    let bgra = BGRA_RAW.load(Ordering::Relaxed) != SWAP_MANUAL.load(Ordering::Relaxed);
     for c in d.chunks_exact_mut(4) { if bgra { c.swap(0, 2); } c[3] = 255; }
     Some((w, h, d))
 }
@@ -708,6 +715,7 @@ fn mi(ui: &mut egui::Ui, text: &str, shortcut: &str, en: bool) -> bool {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
         let before = self.st.clone();
+        SWAP_MANUAL.store(self.st.swap_rb, Ordering::Relaxed);
         if !self.started { self.started = true; ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true)); } // si apre sempre ingrandita
         // PDF inviati da un secondo avvio del programma: si aprono qui, in nuove schede
         let msgs: Vec<Ipc> = self.ipc.as_ref().map(|r| r.try_iter().collect::<Vec<Ipc>>()).unwrap_or_default();
@@ -759,6 +767,7 @@ impl eframe::App for App {
         let maxed = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         let mut close: Option<usize> = None;
         let (mut close_all, mut show_info, mut quit, mut fs_toggle) = (false, false, false, false);
+        let mut recolor = false;
         let want_scroll = std::mem::take(&mut self.scroll_tab);
         egui::TopBottomPanel::top("top")
             .exact_height(38.0)
@@ -802,6 +811,8 @@ impl eframe::App for App {
                                 });
                                 ui.separator();
                                 if mi(ui, "Schermo intero", "F11", true) { fs_toggle = true; }
+                                if ui.checkbox(&mut self.st.swap_rb, "Correggi colori (scambia rosso/blu)")
+                                    .on_hover_text("Da usare se i colori dei PDF risultano sbagliati (per esempio blu al posto di rosso)").changed() { recolor = true; }
                                 ui.separator();
                                 if mi(ui, "Info", "", true) { show_info = true; }
                                 if mi(ui, "Esci", "", true) { quit = true; }
@@ -821,6 +832,11 @@ impl eframe::App for App {
                     });
                 });
             });
+        if recolor { // ridisegna tutte le pagine con l'ordine colori nuovo
+            SWAP_MANUAL.store(self.st.swap_rb, Ordering::Relaxed);
+            for d in &mut self.docs { d.tex.clear(); }
+            self.pv = None; self.pv_raw = None;
+        }
         if quit { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
         if fs_toggle { self.fs = !self.fs; ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fs)); }
         if show_info { self.show_info = true; }
@@ -966,6 +982,11 @@ impl eframe::App for App {
                     ui.heading("PDF Reader CP");
                     ui.label("Programma opensource progettato da Peppe CP con l'aiuto della IA.");
                     ui.label(RichText::new("Versione 1.0").weak());
+                    let px = PROBE_PX.load(Ordering::Relaxed).to_le_bytes();
+                    ui.label(RichText::new(format!("Colori PDF: {} · prova rosso: {}{}",
+                        if BGRA_RAW.load(Ordering::Relaxed) { "BGRA" } else { "RGBA" },
+                        if PROBE_OK.load(Ordering::Relaxed) { format!("{:?}", px) } else { "non riuscita".to_string() },
+                        if self.st.swap_rb { " · correzione manuale attiva" } else { "" })).weak().small());
                 });
             });
             if !open { self.show_info = false; }
