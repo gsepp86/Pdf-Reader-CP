@@ -26,3 +26,4 @@ L'installer si scarica dagli "Artifacts" a fine lavoro.
 - **Stampa...**: pulsante **Impostazioni driver stampante...** (proprieta' del driver: fronte/retro, vassoio, qualita', colore, finitura...). Le scelte del driver vengono usate nella stampa e ricordate per quella stampante; la carta dell'anteprima segue quella del driver.
 - **Colore e luminosita'**: Colori / Scala di grigi / Bianco e nero e cursore Scuro-Chiaro (valido per anteprima e stampa).
 - **Copie**: pulsanti - e + accanto al numero. Con piu' di una copia il programma chiede conferma ("Sicuro di voler stampare N copie del file?", oppure "...dei file aperti?" con STAMPA TUTTO).
+- **Fluidita'**: i PDF restano aperti in memoria; durante ridimensionamento e zoom la pagina non viene ridisegnata a ogni passo (si affina appena ti fermi); nell'anteprima di stampa il cursore chiaro/scuro e la scelta del colore non ricompongono il foglio.

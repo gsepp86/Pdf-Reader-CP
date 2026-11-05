@@ -5,6 +5,7 @@ use pdfium_render::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf, time::{Duration, Instant}};
 use std::io::{BufRead as _, BufReader, Write as _};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const ACCENT: Color32 = Color32::from_rgb(198, 47, 47);
 const BAR: Color32 = Color32::from_rgb(229, 231, 235);
@@ -76,14 +77,31 @@ fn rot90(w: usize, h: usize, d: &[u8]) -> (usize, usize, Vec<u8>) {
     (h, w, o)
 }
 
+/// true se i byte grezzi restituiti da PDFium sono BGRA (da scambiare in RGBA). Impostato all'avvio da detect_byte_order().
+static BGRA_RAW: AtomicBool = AtomicBool::new(false);
+
+/// Rileva l'ordine dei byte di PDFium disegnando un minuscolo PDF tutto rosso: cosi' i colori sono giusti con qualsiasi versione della libreria.
+fn detect_byte_order(pdfium: &Pdfium) {
+    const PROBE: &[u8] = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 20 20]/Contents 4 0 R>>endobj\n4 0 obj<</Length 24>>stream\n1 0 0 rg 0 0 20 20 re f\nendstream\nendobj\ntrailer<</Root 1 0 R>>\n";
+    let Ok(doc) = pdfium.load_pdf_from_byte_vec(PROBE.to_vec(), None) else { return };
+    let Ok(page) = doc.pages().get(0) else { return };
+    let Ok(bmp) = page.render_with_config(&PdfRenderConfig::new().set_target_width(20)) else { return };
+    let raw = bmp.as_raw_bytes();
+    let (w, h) = (bmp.width() as usize, bmp.height() as usize);
+    let i = ((h / 2) * w + w / 2) * 4;
+    if raw.len() < i + 4 { return; }
+    // rosso puro: in RGBA e' [255,0,0], in BGRA e' [0,0,255]
+    BGRA_RAW.store(raw[i] < 128 && raw[i + 2] > 128, Ordering::Relaxed);
+}
+
 /// Rende una pagina in RGBA con la larghezza indicata (px).
-fn render(pdfium: &Pdfium, path: &PathBuf, page: usize, width: i32) -> Option<(usize, usize, Vec<u8>)> {
-    let doc = pdfium.load_pdf_from_file(path, None).ok()?;
+fn render(doc: &PdfDocument, page: usize, width: i32) -> Option<(usize, usize, Vec<u8>)> {
     let p = doc.pages().get(page as u16).ok()?;
     let bmp = p.render_with_config(&PdfRenderConfig::new().set_target_width(width)).ok()?;
     let (w, h) = (bmp.width() as usize, bmp.height() as usize);
-    let mut d = bmp.as_raw_bytes().to_vec(); // BGRA -> RGBA
-    for c in d.chunks_exact_mut(4) { c.swap(0, 2); c[3] = 255; }
+    let mut d = bmp.as_raw_bytes().to_vec();
+    let bgra = BGRA_RAW.load(Ordering::Relaxed);
+    for c in d.chunks_exact_mut(4) { if bgra { c.swap(0, 2); } c[3] = 255; }
     Some((w, h, d))
 }
 
@@ -113,7 +131,7 @@ fn outline(dst: &mut [u8], dw: usize, dh: usize, x: i32, y: i32, w: usize, h: us
 
 /// Compone UN foglio (1, 2, 4, 6, 9 o 16 pagine) su carta `pap` (punti). Usata sia per l'anteprima sia per la stampa.
 /// `ppp` = pixel per punto. Restituisce RGBA gia' ruotato come la carta fisica.
-fn compose(pdfium: &Pdfium, d: &Doc, pages: &[usize], pap: (f32, f32), st: &Settings, ppp: f32) -> Option<(usize, usize, Vec<u8>)> {
+fn compose(_pdfium: &Pdfium, d: &Doc, pages: &[usize], pap: (f32, f32), st: &Settings, ppp: f32, apply_tone: bool) -> Option<(usize, usize, Vec<u8>)> {
     let n = st.nup.max(1) as usize;
     let (pw0, ph0) = d.sizes[*pages.first()?];
     let land = pw0 > ph0;
@@ -136,7 +154,7 @@ fn compose(pdfium: &Pdfium, d: &Doc, pages: &[usize], pap: (f32, f32), st: &Sett
         let (w, h) = (pw * s, ph * s);
         let (cx, cy) = ((i % cols) as f32 * cw + m, (i / cols) as f32 * ch + m);
         let (x, y) = if st.center || n > 1 { (cx + (aw - w) / 2.0, cy + (ah - h) / 2.0) } else { (cx, cy) };
-        let (iw, ih, data) = render(pdfium, &d.path, p, ((w * ppp) as i32).max(8))?;
+        let (iw, ih, data) = render(&d.pdf, p, ((w * ppp) as i32).max(8))?;
         let (xi, yi) = ((x * ppp) as i32, (y * ppp) as i32);
         blit(&mut buf, bw, bh, &data, iw, ih, xi, yi);
         if n > 1 && st.border {
@@ -145,14 +163,13 @@ fn compose(pdfium: &Pdfium, d: &Doc, pages: &[usize], pap: (f32, f32), st: &Sett
             }
         }
     }
-    tone(&mut buf, st);
+    if apply_tone { tone(&mut buf, st); }
     Some(if rot { rot90(bw, bh, &buf) } else { (bw, bh, buf) })
 }
 
 /// Legge i caratteri (con posizione) di una pagina dal livello di testo del PDF.
-fn load_chars(pdfium: &Pdfium, path: &PathBuf, page: usize) -> Vec<TCh> {
+fn load_chars(doc: &PdfDocument, page: usize) -> Vec<TCh> {
     let mut v = vec![];
-    let Ok(doc) = pdfium.load_pdf_from_file(path, None) else { return v };
     let Ok(p) = doc.pages().get(page as u16) else { return v };
     let Ok(t) = p.text() else { return v };
     for ch in t.chars().iter() {
@@ -307,21 +324,23 @@ mod spool {
 }
 
 // ---------- applicazione ----------
-struct Doc { path: PathBuf, name: String, sizes: Vec<(f32, f32)>, cur: usize, zoom: f32, fitpage: bool, tex: HashMap<(usize, i32), egui::TextureHandle>, text: HashMap<usize, Vec<TCh>> }
+struct Doc { pdf: PdfDocument<'static>, path: PathBuf, name: String, sizes: Vec<(f32, f32)>, cur: usize, zoom: f32, fitpage: bool, tex: HashMap<(usize, i32), egui::TextureHandle>, text: HashMap<usize, Vec<TCh>> }
 #[derive(PartialEq, Clone, Copy)]
 enum Tab { Home, Doc(usize) }
-type PvKey = (usize, usize, Settings);
+type PvKey = (u64, ColorMode, i32); // versione del foglio + colore + chiaro/scuro
+type RawKey = (usize, usize, PageSel, String, u32, bool, ScaleMode, u32, bool, bool, (i32, i32));
 /// Carattere del testo di una pagina: unicode + riquadro [sinistra, basso, destra, alto] in punti PDF.
 struct TCh { c: char, r: [f32; 4] }
 /// Selezione di testo: documento, pagina, indice del primo e dell'ultimo carattere.
 struct Sel { doc: usize, page: usize, a: usize, b: usize }
 
 struct App {
-    pdfium: Pdfium, docs: Vec<Doc>, tab: Tab,
+    pdfium: &'static Pdfium, docs: Vec<Doc>, tab: Tab,
     st: Settings, draft: Settings, printers: Vec<String>,
     show_print: bool, prev: usize, pv: Option<(PvKey, egui::TextureHandle)>,
     msg: String, msg_at: Option<Instant>, logo: egui::TextureHandle, fs: bool, show_info: bool, scroll_tab: bool,
     ipc: Option<std::sync::mpsc::Receiver<Ipc>>, started: bool, sel: Option<Sel>, paper: (f32, f32), paper_key: (String, String),
+    pv_raw: Option<(RawKey, usize, usize, Vec<u8>)>, pv_gen: u64, last_size: (i32, i32), last_change: Instant,
 }
 
 impl App {
@@ -342,8 +361,10 @@ impl App {
         if !printers.contains(&st.printer) {
             st.printer = printers::get_default_printer().map(|p| p.name).or_else(|| printers.first().cloned()).unwrap_or_default();
         }
+        let pdfium: &'static Pdfium = Box::leak(Box::new(Pdfium::new(bind))); // vive per tutto il programma: i PDF aperti restano in memoria
+        detect_byte_order(pdfium);
         let ipc = listener.map(|l| { let (tx, rx) = std::sync::mpsc::channel(); serve(l, tx, cc.egui_ctx.clone()); rx });
-        let mut app = App { pdfium: Pdfium::new(bind), docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()) };
+        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now() };
         for a in init { app.open(a); }
         app
     }
@@ -352,7 +373,7 @@ impl App {
 
     fn ensure_chars(&mut self, di: usize, page: usize) {
         if di >= self.docs.len() || self.docs[di].text.contains_key(&page) { return; }
-        let v = load_chars(&self.pdfium, &self.docs[di].path, page);
+        let v = load_chars(&self.docs[di].pdf, page);
         let d = &mut self.docs[di];
         if d.text.len() >= 20 { d.text.clear(); }
         d.text.insert(page, v);
@@ -369,12 +390,12 @@ impl App {
     fn open(&mut self, path: PathBuf) {
         // gia' aperto: passa a quella scheda invece di duplicarla
         if let Some(i) = self.docs.iter().position(|d| d.path == path) { self.tab = Tab::Doc(i); self.scroll_tab = true; return; }
-        let sizes: Option<Vec<(f32, f32)>> = self.pdfium.load_pdf_from_file(&path, None).ok()
-            .map(|d| d.pages().iter().map(|p| (p.width().value, p.height().value)).collect());
-        match sizes {
-            Some(s) if !s.is_empty() => {
+        let pdf = self.pdfium.load_pdf_from_file(&path, None).ok();
+        let sizes: Option<Vec<(f32, f32)>> = pdf.as_ref().map(|d| d.pages().iter().map(|p| (p.width().value, p.height().value)).collect());
+        match (pdf, sizes) {
+            (Some(pdf), Some(s)) if !s.is_empty() => {
                 let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                self.docs.push(Doc { path, name, sizes: s, cur: 0, zoom: 1.0, fitpage: false, tex: HashMap::new(), text: HashMap::new() });
+                self.docs.push(Doc { pdf, path, name, sizes: s, cur: 0, zoom: 1.0, fitpage: false, tex: HashMap::new(), text: HashMap::new() });
                 self.tab = Tab::Doc(self.docs.len() - 1);
                 self.scroll_tab = true;
             }
@@ -390,9 +411,17 @@ impl App {
 
     fn get_tex(&mut self, ctx: &egui::Context, di: usize, page: usize, width: i32) -> Option<egui::TextureHandle> {
         if let Some(t) = self.docs[di].tex.get(&(page, width)) { return Some(t.clone()); }
-        let (w, h, d) = render(&self.pdfium, &self.docs[di].path, page, width)?;
+        // mentre ridimensioni o fai zoom mostro la versione gia' pronta (scalata) e rifaccio il rendering a riposo: niente blocchi
+        if self.last_change.elapsed() < Duration::from_millis(180) {
+            if let Some(t) = self.docs[di].tex.iter().filter(|(k, _)| k.0 == page).min_by_key(|(k, _)| (k.1 - width).abs()).map(|(_, t)| t.clone()) {
+                ctx.request_repaint_after(Duration::from_millis(200));
+                return Some(t);
+            }
+        }
+        let (w, h, d) = render(&self.docs[di].pdf, page, width)?;
         let t = ctx.load_texture("page", egui::ColorImage::from_rgba_unmultiplied([w, h], &d), egui::TextureOptions::LINEAR);
         let doc = &mut self.docs[di];
+        doc.tex.retain(|k, _| k.0 != page);
         if doc.tex.len() >= 6 { doc.tex.clear(); }
         doc.tex.insert((page, width), t.clone());
         Some(t)
@@ -418,7 +447,7 @@ impl App {
             let mut last: Option<(usize, usize, usize, Vec<u8>)> = None;
             for s in order {
                 if last.as_ref().map(|l| l.0) != Some(s) {
-                    let (w, h, mut b) = compose(&self.pdfium, d, &sheets[s], (aw, ah), &st, 300.0 / 72.0).ok_or("Rendering della pagina non riuscito")?;
+                    let (w, h, mut b) = compose(&self.pdfium, d, &sheets[s], (aw, ah), &st, 300.0 / 72.0, true).ok_or("Rendering della pagina non riuscito")?;
                     for q in b.chunks_exact_mut(4) { q.swap(0, 2); } // RGBA -> BGRA per GDI
                     last = Some((s, w, h, b));
                 }
@@ -474,48 +503,54 @@ impl App {
         let pages = pages_for(&self.draft, self.docs[di].cur, n);
         let sheets = (pages.len() + nup - 1) / nup;
         let prev = self.prev.min(sheets.saturating_sub(1));
-        // anteprima: ricalcolata solo quando cambia qualcosa
-        let key: PvKey = (di, prev, self.draft.clone());
-        if self.pv.as_ref().map(|p| &p.0) != Some(&key) {
-            self.pv = None;
-            if let Some(chunk) = pages.chunks(nup).nth(prev) {
-                if let Some((w, h, d)) = compose(&self.pdfium, &self.docs[di], chunk, self.paper, &self.draft, 1.7) {
-                    let t = ctx.load_texture("pv", egui::ColorImage::from_rgba_unmultiplied([w, h], &d), egui::TextureOptions::LINEAR);
-                    self.pv = Some((key, t));
-                }
-            }
+        // anteprima: il foglio si ricompone solo se cambiano pagine/scala/carta; colore e chiaro/scuro si applicano al volo
+        let d0 = &self.draft;
+        let rk: RawKey = (di, prev, d0.sel, d0.custom.clone(), d0.nup, d0.border, d0.scale, d0.pct, d0.rotate, d0.center, (self.paper.0 as i32, self.paper.1 as i32));
+        if self.pv_raw.as_ref().map(|r| &r.0) != Some(&rk) {
+            self.pv_gen += 1;
+            self.pv_raw = pages.chunks(nup).nth(prev)
+                .and_then(|chunk| compose(&self.pdfium, &self.docs[di], chunk, self.paper, &self.draft, 1.5, false))
+                .map(|(w, h, b)| (rk, w, h, b));
+        }
+        let tk: PvKey = (self.pv_gen, self.draft.color, self.draft.bright);
+        if self.pv.as_ref().map(|p| &p.0) != Some(&tk) {
+            self.pv = self.pv_raw.as_ref().map(|(_, w, h, b)| {
+                let mut t = b.clone();
+                tone(&mut t, &self.draft);
+                (tk, ctx.load_texture("pv", egui::ColorImage::from_rgba_unmultiplied([*w, *h], &t), egui::TextureOptions::LINEAR))
+            });
         }
         let maxh = (ctx.screen_rect().height() - 200.0).max(320.0);
         egui::Window::new("Stampa").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
             { // pulsanti e testi piu' grandi
                 let s = ui.style_mut();
-                s.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(17.0));
-                s.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(16.0));
-                s.spacing.button_padding = Vec2::new(14.0, 8.0);
-                s.spacing.interact_size.y = 32.0;
-                s.spacing.icon_width = 22.0;
-                s.spacing.slider_width = 220.0;
+                s.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(15.5));
+                s.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.5));
+                s.spacing.button_padding = Vec2::new(12.0, 6.0);
+                s.spacing.interact_size.y = 28.0;
+                s.spacing.icon_width = 19.0;
+                s.spacing.slider_width = 190.0;
             }
             ui.horizontal_top(|ui| {
                 egui::ScrollArea::vertical().max_height(maxh).auto_shrink([true, true]).show(ui, |ui| {
                     ui.vertical(|ui| {
-                        ui.set_width(440.0);
+                        ui.set_width(390.0);
                         ui.group(|ui| {
                             ui.label(RichText::new("Stampante").strong().color(ACCENT));
-                            egui::ComboBox::from_id_salt("pr").width(400.0).selected_text(self.draft.printer.clone()).show_ui(ui, |ui| {
+                            egui::ComboBox::from_id_salt("pr").width(350.0).selected_text(self.draft.printer.clone()).show_ui(ui, |ui| {
                                 for p in &self.printers { ui.selectable_value(&mut self.draft.printer, p.clone(), p); }
                             });
                             ui.horizontal(|ui| {
-                                if ui.add(Button::new("Impostazioni driver stampante…").min_size(Vec2::new(300.0, 38.0)))
+                                if ui.add(Button::new("Impostazioni driver stampante…").min_size(Vec2::new(270.0, 34.0)))
                                     .on_hover_text("Apre le proprietà del driver: fronte/retro, vassoio, qualità, colore, finitura...").clicked() { drv = true; }
-                                if !self.draft.drv_mode.is_empty() && ui.add(Button::new("Azzera").min_size(Vec2::new(80.0, 38.0))).on_hover_text("Torna alle impostazioni predefinite del driver").clicked() { drv_reset = true; }
+                                if !self.draft.drv_mode.is_empty() && ui.add(Button::new("Azzera").min_size(Vec2::new(70.0, 34.0))).on_hover_text("Torna alle impostazioni predefinite del driver").clicked() { drv_reset = true; }
                             });
                             if !self.draft.drv_mode.is_empty() { ui.label(RichText::new("Impostazioni del driver attive").weak()); }
                             ui.horizontal(|ui| {
                                 ui.label("Copie");
-                                if ui.add(Button::new(RichText::new("-").size(22.0)).min_size(Vec2::new(44.0, 38.0))).clicked() { self.draft.copies = self.draft.copies.saturating_sub(1).max(1); }
+                                if ui.add(Button::new(RichText::new("-").size(20.0)).min_size(Vec2::new(40.0, 34.0))).clicked() { self.draft.copies = self.draft.copies.saturating_sub(1).max(1); }
                                 ui.add(egui::DragValue::new(&mut self.draft.copies).range(1..=99));
-                                if ui.add(Button::new(RichText::new("+").size(22.0)).min_size(Vec2::new(44.0, 38.0))).clicked() { self.draft.copies = (self.draft.copies + 1).min(99); }
+                                if ui.add(Button::new(RichText::new("+").size(20.0)).min_size(Vec2::new(40.0, 34.0))).clicked() { self.draft.copies = (self.draft.copies + 1).min(99); }
                                 ui.checkbox(&mut self.draft.collate, "Fascicola");
                             });
                         });
@@ -559,7 +594,7 @@ impl App {
                                 ui.label("Scuro");
                                 ui.add(egui::Slider::new(&mut self.draft.bright, -100..=100).show_value(false));
                                 ui.label("Chiaro");
-                                if ui.add(Button::new("0").min_size(Vec2::new(40.0, 34.0))).on_hover_text("Azzera chiaro/scuro").clicked() { self.draft.bright = 0; }
+                                if ui.add(Button::new("0").min_size(Vec2::new(36.0, 30.0))).on_hover_text("Azzera chiaro/scuro").clicked() { self.draft.bright = 0; }
                             });
                         });
                         ui.label(RichText::new("Le impostazioni vengono ricordate per «Stampa subito».").weak());
@@ -569,7 +604,7 @@ impl App {
                     let (pw, ph) = self.paper;
                     let mm = |p: f32| (p / 72.0 * 25.4).round() as i32;
                     ui.label(format!("Carta: {} × {} mm", mm(pw), mm(ph)));
-                    let k = (340.0 / pw).min(481.0 / ph);
+                    let k = (300.0 / pw).min(424.0 / ph);
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(pw * k, ph * k), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 0.0, Color32::WHITE);
                     if let Some((_, t)) = &self.pv {
@@ -584,8 +619,8 @@ impl App {
             });
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.add(Button::new(RichText::new("Stampa").size(19.0).strong().color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(160.0, 44.0))).clicked() { go = true; }
-                if ui.add(Button::new(RichText::new("Annulla").size(19.0)).min_size(Vec2::new(130.0, 44.0))).clicked() { cancel = true; }
+                if ui.add(Button::new(RichText::new("Stampa").size(17.0).strong().color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(140.0, 40.0))).clicked() { go = true; }
+                if ui.add(Button::new(RichText::new("Annulla").size(17.0)).min_size(Vec2::new(115.0, 40.0))).clicked() { cancel = true; }
             });
         });
         if drv {
@@ -726,6 +761,7 @@ impl eframe::App for App {
         let (mut close_all, mut show_info, mut quit, mut fs_toggle) = (false, false, false, false);
         let want_scroll = std::mem::take(&mut self.scroll_tab);
         egui::TopBottomPanel::top("top")
+            .exact_height(38.0)
             .frame(egui::Frame::none().fill(BAR).inner_margin(egui::Margin::symmetric(6.0, 3.0)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -789,11 +825,11 @@ impl eframe::App for App {
         if fs_toggle { self.fs = !self.fs; ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fs)); }
         if show_info { self.show_info = true; }
         if ctrl_w { close = cur_doc; }
-        if close_all { self.docs.clear(); self.tab = Tab::Home; self.show_print = false; self.pv = None; }
+        if close_all { self.docs.clear(); self.tab = Tab::Home; self.show_print = false; self.pv = None; self.pv_raw = None; }
         if let Some(i) = close.filter(|&i| i < self.docs.len()) {
             self.docs.remove(i);
             self.tab = match self.tab { Tab::Doc(j) if j == i => Tab::Home, Tab::Doc(j) if j > i => Tab::Doc(j - 1), t => t };
-            self.show_print = false; self.pv = None;
+            self.show_print = false; self.pv = None; self.pv_raw = None;
         }
 
         // ---- testo selezionabile: carica i caratteri della pagina e gestisce "seleziona tutto" ----
@@ -802,7 +838,7 @@ impl eframe::App for App {
             if i < self.docs.len() {
                 let cur = self.docs[i].cur;
                 if self.sel.as_ref().map_or(false, |s| s.doc != i || s.page != cur) { self.sel = None; }
-                self.ensure_chars(i, cur);
+                if sel_all || ctx.input(|i| i.pointer.primary_pressed()) { self.ensure_chars(i, cur); } // il testo si legge solo quando serve
                 if sel_all {
                     let boxed: Vec<usize> = self.docs[i].text[&cur].iter().enumerate().filter(|(_, c)| c.r[2] - c.r[0] > 0.01 && c.r[3] - c.r[1] > 0.01).map(|(k, _)| k).collect();
                     self.sel = match (boxed.first(), boxed.last()) { (Some(&a), Some(&b)) => Some(Sel { doc: i, page: cur, a, b }), _ => { no_text = true; None } };
@@ -832,9 +868,12 @@ impl eframe::App for App {
                 let base = if fp { (av.x - 16.0).min((av.y - 8.0) * pw / ph) } else { av.x - 16.0 };
                 let w = (base * zoom).max(50.0);
                 let h = w * ph / pw;
+                let sz = (w as i32, h as i32);
+                if sz != self.last_size { self.last_size = sz; self.last_change = Instant::now(); }
                 let bucket = (((w * ctx.pixels_per_point()) as i32).clamp(800, 3200) + 399) / 400 * 400;
                 if let Some(t) = self.get_tex(ctx, i, cur, bucket) {
                     let empty: Vec<TCh> = Vec::new();
+                    let loaded = self.docs[i].text.contains_key(&cur);
                     let chars = self.docs[i].text.get(&cur).unwrap_or(&empty);
                     let sel = &mut self.sel;
                     egui::ScrollArea::both().id_salt((i, cur)).auto_shrink([false; 2]).drag_to_scroll(false).show(ui, |ui| {
@@ -842,9 +881,9 @@ impl eframe::App for App {
                         let img = egui::Image::new(egui::load::SizedTexture::new(t.id(), Vec2::new(w, h))).sense(egui::Sense::click_and_drag());
                         let resp = ui.vertical_centered(|ui| ui.add(img)).inner;
                         let to_pt = |p: egui::Pos2| ((p.x - resp.rect.min.x) / w * pw, ph - (p.y - resp.rect.min.y) / h * ph);
-                        if resp.hovered() && !chars.is_empty() { ctx.set_cursor_icon(egui::CursorIcon::Text); }
+                        if resp.hovered() && (!loaded || !chars.is_empty()) { ctx.set_cursor_icon(egui::CursorIcon::Text); }
                         if resp.drag_started() {
-                            if chars.is_empty() { no_text = true; }
+                            if loaded && chars.is_empty() { no_text = true; }
                             *sel = resp.interact_pointer_pos().and_then(|p| { let (x, y) = to_pt(p); hit(chars, x, y) }).map(|k| Sel { doc: i, page: cur, a: k, b: k });
                         } else if resp.dragged() {
                             if let (Some(p), Some(s)) = (resp.interact_pointer_pos(), sel.as_mut()) {
@@ -914,7 +953,7 @@ impl eframe::App for App {
         // ---- azioni ----
         if o { self.pick(); }
         if let Some(i) = cur_doc.filter(|&i| i < self.docs.len()) {
-            if pd { self.show_print = true; self.draft = self.st.clone(); self.prev = 0; self.pv = None; }
+            if pd { self.show_print = true; self.draft = self.st.clone(); self.prev = 0; self.pv = None; self.pv_raw = None; }
             if q { self.print_one(i); }
         }
         if all { self.print_all(); }
