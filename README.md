@@ -12,7 +12,23 @@ Se vuoi semplicemente scaricare l'installer clicca sulla destra nella sezione re
 
 
 
-![Anteprima PDF Reader CP](assets/Schermata%20principale%20(menu%20File%20aperto).png)
+### Anteprima Principale
+
+![Schermata Principale con Menu File](assets/Schermata%20principale%20(menu%20File%20aperto).png)
+
+---
+
+### Schermate e Funzionalità
+
+![Anteprima di Stampa (4 su 1)](assets/Anteprima%20di%20stampa%20(4%20su%201).png)
+
+![Stampa in Proporzione Personalizzata](assets/Stampa%20in%20proporzione%20personalizzata%20(85%20).png)
+
+![Impostazioni del Programma](assets/Impostazioni%20(File%20%E2%80%BA%20Impostazioni).png)
+
+![Conferma con Più Copie](assets/Conferma%20con%20pi%C3%B9%20copie.png)
+
+![Avviso Stampa Tutto con Più Copie](assets/STAMPA%20TUTTO%20avviso%20con%20pi%C3%B9%20copie.png)
 
 
 
