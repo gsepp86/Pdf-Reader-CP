@@ -1,0 +1,1 @@
+Qui va pdfium.dll (build.bat la scarica da solo).
