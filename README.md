@@ -14,21 +14,21 @@ Se vuoi semplicemente scaricare l'installer clicca sulla destra nella sezione re
 
 ### Anteprima Principale
 
-![Schermata Principale con Menu File](assets/Schermata%20principale%20(menu%20File%20aperto).png)
+<img src="assets/Schermata%20principale%20(menu%20File%20aperto).png" width="450" alt="Schermata Principale">
 
 ---
 
 ### Schermate e Funzionalità
 
-![Anteprima di Stampa (4 su 1)](assets/Anteprima%20di%20stampa%20(4%20su%201).png)
+<img src="assets/Anteprima%20di%20stampa%20(4%20su%201).png" width="400" alt="Anteprima di stampa">
 
-![Stampa in Proporzione Personalizzata](assets/Stampa%20in%20proporzione%20personalizzata%20(85%20).png)
+<img src="assets/Stampa%20in%20proporzione%20personalizzata%20(85%20).png" width="400" alt="Stampa personalizzata">
 
-![Impostazioni del Programma](assets/Impostazioni%20(File%20%E2%80%BA%20Impostazioni).png)
+<img src="assets/Impostazioni%20(File%20%E2%80%BA%20Impostazioni).png" width="400" alt="Impostazioni">
 
-![Conferma con Più Copie](assets/Conferma%20con%20pi%C3%B9%20copie.png)
+<img src="assets/Conferma%20con%20pi%C3%B9%20copie.png" width="400" alt="Conferma con più copie">
 
-![Avviso Stampa Tutto con Più Copie](assets/STAMPA%20TUTTO%20avviso%20con%20pi%C3%B9%20copie.png)
+<img src="assets/STAMPA%20TUTTO%20avviso%20con%20pi%C3%B9%20copie.png" width="400" alt="Avviso stampa tutto">
 
 
 
