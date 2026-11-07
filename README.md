@@ -12,7 +12,7 @@ Se vuoi semplicemente scaricare l'installer clicca sulla destra nella sezione re
 
 
 
-![Anteprima PDF Reader CP](assets/Schermata principale (menu File aperto).png)
+![Anteprima PDF Reader CP](assets/Schermata%20principale%20(menu%20File%20aperto).png)
 
 
 
