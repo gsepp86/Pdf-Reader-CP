@@ -14,7 +14,7 @@ Se vuoi semplicemente scaricare l'installer clicca sulla destra nella sezione re
 
 ### Anteprima Principale
 
-<img src="assets/Schermata%20principale%20(menu%20File%20aperto).png" width="450" alt="Schermata Principale">
+![Schermata Principale con Menu File](assets/Schermata%20principale%20(menu%20File%20aperto).png)
 
 ---
 
