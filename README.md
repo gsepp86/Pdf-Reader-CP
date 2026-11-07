@@ -11,6 +11,11 @@ Lettore PDF a schede in Rust (egui + PDFium): una sola barra in alto con schede 
 Se vuoi semplicemente scaricare l'installer clicca sulla destra nella sezione releases e avvia il download di PDF Reader CP 2.0 per Windows 64bit - rust edition ultraveloce
 
 
+
+![Anteprima PDF Reader CP](assets/Schermata principale (menu File aperto).png)
+
+
+
 Se vuoi compilarlo tu stesso di seguito la procedura:
 
 ## Creare l'installer per Windows
