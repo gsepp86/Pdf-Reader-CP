@@ -20,15 +20,15 @@ Se vuoi semplicemente scaricare l'installer clicca sulla destra nella sezione re
 
 ### Schermate e Funzionalità
 
-<img src="assets/Anteprima%20di%20stampa%20(4%20su%201).png" width="400" alt="Anteprima di stampa">
+<img src="assets/Anteprima%20di%20stampa%20(4%20su%201).png" width="600" alt="Anteprima di stampa">
 
-<img src="assets/Stampa%20in%20proporzione%20personalizzata%20(85%20).png" width="400" alt="Stampa personalizzata">
+<img src="assets/Stampa%20in%20proporzione%20personalizzata%20(85%20).png" width="600" alt="Stampa personalizzata">
 
-<img src="assets/Impostazioni%20(File%20%E2%80%BA%20Impostazioni).png" width="400" alt="Impostazioni">
+<img src="assets/Impostazioni%20(File%20%E2%80%BA%20Impostazioni).png" width="600" alt="Impostazioni">
 
-<img src="assets/Conferma%20con%20pi%C3%B9%20copie.png" width="400" alt="Conferma con più copie">
+<img src="assets/Conferma%20con%20pi%C3%B9%20copie.png" width="600" alt="Conferma con più copie">
 
-<img src="assets/STAMPA%20TUTTO%20avviso%20con%20pi%C3%B9%20copie.png" width="400" alt="Avviso stampa tutto">
+<img src="assets/STAMPA%20TUTTO%20avviso%20con%20pi%C3%B9%20copie.png" width="600" alt="Avviso stampa tutto">
 
 
 
