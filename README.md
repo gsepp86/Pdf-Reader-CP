@@ -8,6 +8,11 @@ Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire
 [![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://paypal.me/PeppeCP)
 
 
+Se vuoi semplicemente scaricare l'installer clicca sulla destra nella sezione releases e avvia il download di PDF Reader CP 2.0 per Windows 64bit - rust edition ultraveloce
+
+
+Se vuoi compilarlo tu stesso di seguito la procedura:
+
 ## Creare l'installer per Windows
 **Metodo 1 - sul tuo PC (Windows 10/11 x64):** installa Rust (https://rustup.rs), poi doppio clic su `build.bat`.
 Scarica da solo pdfium.dll e Inno Setup e produce `dist\PDFReaderCP_Setup_2.0.exe`.
