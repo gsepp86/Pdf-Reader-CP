@@ -3,37 +3,6 @@ Programma opensource progettato da Peppe CP con l'aiuto della IA.
 
 Lettore PDF a schede in Rust (egui + PDFium): una sola barra in alto con schede e comandi di stampa, documento a tutto schermo.
 
-## Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto il tempo che ti farò risparmiare per stampare grossi quantitativi di pdf ;-)
-
-[![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://paypal.me/PeppeCP)
-
-
-Se vuoi semplicemente scaricare l'installer clicca sulla destra nella sezione releases e avvia il download di PDF Reader CP 2.0 per Windows 64bit - rust edition ultraveloce
-
-
-
-### Anteprima Principale
-
-![Schermata Principale con Menu File](assets/Schermata%20principale%20(menu%20File%20aperto).png)
-
----
-
-### Schermate e Funzionalità
-
-<img src="assets/Anteprima%20di%20stampa%20(4%20su%201).png" width="600" alt="Anteprima di stampa">
-
-<img src="assets/Stampa%20in%20proporzione%20personalizzata%20(85%20).png" width="600" alt="Stampa personalizzata">
-
-<img src="assets/Impostazioni%20(File%20%E2%80%BA%20Impostazioni).png" width="600" alt="Impostazioni">
-
-<img src="assets/Conferma%20con%20pi%C3%B9%20copie.png" width="600" alt="Conferma con più copie">
-
-<img src="assets/STAMPA%20TUTTO%20avviso%20con%20pi%C3%B9%20copie.png" width="600" alt="Avviso stampa tutto">
-
-
-
-Se vuoi compilarlo tu stesso di seguito la procedura:
-
 ## Creare l'installer per Windows
 **Metodo 1 - sul tuo PC (Windows 10/11 x64):** installa Rust (https://rustup.rs), poi doppio clic su `build.bat`.
 Scarica da solo pdfium.dll e Inno Setup e produce `dist\PDFReaderCP_Setup_2.0.exe`.
@@ -64,3 +33,11 @@ L'installer si scarica dagli "Artifacts" a fine lavoro.
 - **Finestra**: si sposta trascinando qualsiasi spazio libero della barra in alto (anche tra le schede e accanto all'icona); doppio clic sulla barra = ingrandisci/ripristina. Le stampanti sono elencate in ordine alfabetico.
 - **Impostazioni** (File > Impostazioni..., Ctrl+,): finestra con due sezioni, Generale (apri sempre in secondo piano, avvia ingrandita, strumento e vista iniziali) e Stampa (stampante, copie, pagine per foglio, colore, conferma con piu' copie). Si salvano con "Salva" nel file settings.json.
 - **In secondo piano**: con l'opzione attiva (anche da File > Apri sempre in secondo piano) la finestra parte senza prendere il focus e i PDF aperti da un secondo avvio si aggiungono come schede senza portarla davanti.
+- **Intervallo personalizzato**: si possono ripetere le pagine, per esempio `1,1` (pagina 1 due volte, utile con 2 su 1), `2x3` (pagina 2 tre volte) o `1-3x2` (ogni pagina due volte).
+- **Schede**: la barra di scorrimento compare sotto le schede solo quando sono troppe.
+
+## Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto il tempo che ti farò risparmiare per stampare grossi quantitativi di pdf ;-)
+
+[![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://paypal.me/PeppeCP)
+
+https://github.com/gsepp86/Pdf-Reader-CP

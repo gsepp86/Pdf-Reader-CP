@@ -11,6 +11,8 @@ const ACCENT: Color32 = Color32::from_rgb(198, 47, 47);
 const BAR: Color32 = Color32::from_rgb(229, 231, 235);
 const A4: (f32, f32) = (595.0, 842.0); // punti (1/72")
 const ICON: &[u8] = include_bytes!("../assets/icon.png");
+const DONATE_URL: &str = "https://paypal.me/PeppeCP";
+const GITHUB_URL: &str = "https://github.com/gsepp86/Pdf-Reader-CP";
 const NUPS: [u32; 6] = [1, 2, 4, 6, 9, 16]; // pagine per foglio
 
 // ---------- impostazioni di stampa (salvate: servono a "Stampa subito") ----------
@@ -49,14 +51,19 @@ fn pages_for(st: &Settings, cur: usize, n: usize) -> Vec<usize> {
         PageSel::All => (0..n).collect(),
         PageSel::Current => vec![cur],
         PageSel::Custom => {
+            // es. "1-3, 5"  |  "1,1" = pagina 1 due volte  |  "2x3" = pagina 2 per 3 volte (anche "1-3x2": ogni pagina due volte)
             let mut v = vec![];
             for part in st.custom.split(',') {
-                let part = part.trim();
-                let (a, b) = match part.split_once('-') {
-                    Some((a, b)) => (a.trim().parse::<usize>().unwrap_or(1), if b.trim().is_empty() { n } else { b.trim().parse::<usize>().unwrap_or(n) }),
-                    None => { let x = part.parse::<usize>().unwrap_or(0); (x, x) }
+                let part = part.trim().to_lowercase();
+                let (spec, rep) = match part.split_once('x') {
+                    Some((a, k)) => (a.trim().to_string(), k.trim().parse::<usize>().unwrap_or(1).clamp(1, 99)),
+                    None => (part.clone(), 1),
                 };
-                for p in a.max(1)..=b.min(n) { if !v.contains(&(p - 1)) { v.push(p - 1); } }
+                let (a, b) = match spec.split_once('-') {
+                    Some((a, b)) => (a.trim().parse::<usize>().unwrap_or(1), if b.trim().is_empty() { n } else { b.trim().parse::<usize>().unwrap_or(n) }),
+                    None => { let x = spec.trim().parse::<usize>().unwrap_or(0); (x, x) }
+                };
+                for p in a.max(1)..=b.min(n) { for _ in 0..rep { v.push(p - 1); } }
             }
             v
         }
@@ -687,7 +694,10 @@ impl App {
                                 ui.radio_value(&mut self.draft.sel, PageSel::Current, "Corrente");
                                 ui.radio_value(&mut self.draft.sel, PageSel::Custom, "Personalizzato");
                             });
-                            if self.draft.sel == PageSel::Custom { ui.text_edit_singleline(&mut self.draft.custom); }
+                            if self.draft.sel == PageSel::Custom {
+                                ui.text_edit_singleline(&mut self.draft.custom);
+                                ui.label(RichText::new("Esempi: 1-3, 5  ·  1,1 (pagina 1 due volte)  ·  2x3 (pagina 2 tre volte)").weak().small());
+                            }
                         });
                         ui.group(|ui| {
                             ui.label(RichText::new("Pagine per foglio e scala").strong().color(ACCENT));
@@ -823,7 +833,7 @@ fn tab_widget(ui: &mut egui::Ui, text: &str, selected: bool, tip: &str) -> (egui
     let col = if selected { Color32::from_gray(20) } else { Color32::from_gray(70) };
     let galley = ui.painter().layout_no_wrap(text.to_string(), egui::TextStyle::Button.resolve(ui.style()), col);
     let (pad, xw) = (10.0_f32, 18.0_f32);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(pad + galley.size().x + 8.0 + xw + 4.0, 28.0), egui::Sense::click_and_drag());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(pad + galley.size().x + 8.0 + xw + 4.0, 26.0), egui::Sense::click_and_drag());
     let xr = egui::Rect::from_center_size(egui::pos2(rect.right() - 4.0 - xw / 2.0, rect.center().y), Vec2::splat(xw));
     let hover_x = resp.hovered() && ui.input(|i| i.pointer.hover_pos()).map_or(false, |p| xr.contains(p));
     let close = resp.clicked() && resp.interact_pointer_pos().map_or(false, |p| xr.contains(p));
@@ -967,7 +977,12 @@ impl eframe::App for App {
                                 if mi(ui, "Info", "", true) { show_info = true; }
                                 if mi(ui, "Esci", "", true) { quit = true; }
                             });
-                            egui::ScrollArea::horizontal().id_salt("tabs").drag_to_scroll(false).show(ui, |ui| {
+                            { // barra di scorrimento sotto le schede: compare solo quando servono, occupa 6 px e non le copre
+                                let mut sc = egui::style::ScrollStyle::solid();
+                                sc.bar_width = 5.0; sc.bar_inner_margin = 1.0; sc.bar_outer_margin = 0.0;
+                                ui.spacing_mut().scroll = sc;
+                            }
+                            egui::ScrollArea::horizontal().id_salt("tabs").drag_to_scroll(false).auto_shrink([false, false]).show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 2.0;
                                     for i in 0..self.docs.len() {
@@ -1171,6 +1186,19 @@ impl eframe::App for App {
                     ui.heading("PDF Reader CP");
                     ui.label("Programma opensource progettato da Peppe CP con l'aiuto della IA.");
                     ui.label(RichText::new("Versione 2.0").weak());
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.scope(|ui| {
+                        ui.set_max_width(430.0);
+                        ui.label("Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto il tempo che ti farò risparmiare per stampare grossi quantitativi di pdf ;-)");
+                    });
+                    ui.add_space(6.0);
+                    if ui.add(Button::new(RichText::new("Dona con PayPal").strong().color(Color32::WHITE)).fill(Color32::from_rgb(0, 112, 186)).min_size(Vec2::new(220.0, 38.0)))
+                        .on_hover_text(DONATE_URL).clicked() {
+                        ctx.output_mut(|o| o.open_url = Some(egui::OpenUrl::new_tab(DONATE_URL)));
+                    }
+                    ui.add_space(4.0);
+                    ui.hyperlink_to("github.com/gsepp86/Pdf-Reader-CP", GITHUB_URL);
                 });
             });
             if !open { self.show_info = false; }
