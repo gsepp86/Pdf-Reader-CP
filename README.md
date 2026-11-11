@@ -41,3 +41,7 @@ L'installer si scarica dagli "Artifacts" a fine lavoro.
 [![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://paypal.me/PeppeCP)
 
 https://github.com/gsepp86/Pdf-Reader-CP
+- **STAMPA TUTTO**: chiede sempre "STAMPARE CON LE IMPOSTAZIONI ATTUALI?" con il riepilogo (schede, pagine, fogli, copie, totale fogli, stampante, colore) e tre pulsanti: **STAMPA**, **CAMBIA** (apre le impostazioni di stampa: con **STAMPA TUTTO** stampa tutte le schede con le nuove impostazioni) e **ANNULLA**. Se sono impostate piu' copie compare anche **1 COPIA PER FILE**.
+- **Cambio pagina scorrendo**: con la rotella, il touchpad o lo strumento mano, arrivati in fondo alla pagina si continua sulla successiva (e in alto sulla precedente), senza cliccare i pulsanti.
+- **Schede tante**: quando non entrano nella barra compaiono piccoli numeri 1, 2, 3... sotto ogni scheda.
+- **Finestra di stampa**: la colonna delle impostazioni (compreso il cursore Scuro-Chiaro in "Colore e luminosita'") usa piu' altezza e ha una barra di scorrimento visibile se serve.

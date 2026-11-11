@@ -358,6 +358,8 @@ struct App {
     pv_raw: Option<(RawKey, usize, usize, Vec<u8>)>, pv_gen: u64, last_size: (i32, i32), last_change: Instant,
     pan: bool, search: String, search_hit: Option<(usize, usize)>, search_focus: bool, jump: bool,
     show_cfg: bool, cfg: Settings, cfg_tab: usize,
+    show_pall: bool, pa_mode: bool,
+    over_acc: f32, over_at: Instant, edge: (bool, bool), scroll_reset: Option<bool>, tabs_overflow: bool,
 }
 
 impl App {
@@ -384,7 +386,7 @@ impl App {
         detect_byte_order(pdfium);
         let start_pan = st.start_pan;
         let ipc = listener.map(|l| { let (tx, rx) = std::sync::mpsc::channel(); serve(l, tx, cc.egui_ctx.clone()); rx });
-        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0 };
+        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false };
         for a in init { app.open(a); }
         app
     }
@@ -521,27 +523,51 @@ impl App {
 
     /// STAMPA TUTTO: tutte le schede aperte (ognuna per intero), in sequenza, con un solo messaggio di conferma.
     fn print_all(&mut self) {
-        if self.docs.is_empty() { return; }
+        if !self.docs.is_empty() { self.show_pall = true; }
+    }
+
+    /// Richiesta di STAMPA TUTTO: stampare con le impostazioni attuali (STAMPA), cambiarle al volo (CAMBIA) o annullare.
+    fn pall_window(&mut self, ctx: &egui::Context) {
         let n = self.docs.len();
+        if n == 0 { self.show_pall = false; return; }
+        let (mut open, mut go, mut one, mut change, mut cancel) = (true, false, false, false, ctx.input(|i| i.key_pressed(egui::Key::Escape)));
         let c = self.st.copies.max(1);
         let nup = self.st.nup.max(1) as usize;
         let pagine: usize = self.docs.iter().map(|d| d.sizes.len()).sum();
         let fogli: usize = self.docs.iter().map(|d| (d.sizes.len() + nup - 1) / nup).sum(); // fogli per copia
+        let tot = fogli * c as usize;
+        let warn = c > 1 && self.st.ask_copies;
+        let colore = match self.st.color { ColorMode::Color => "COLORI", ColorMode::Gray => "SCALA DI GRIGI", ColorMode::Bw => "BIANCO E NERO" };
         let stampante = self.st.printer.to_uppercase();
-        if c > 1 && self.st.ask_copies {
-            let tot = fogli * c as usize;
-            let testo = format!("ATTENZIONE: SONO IMPOSTATE {c} COPIE PER OGNI FILE.\n\nSCHEDE APERTE: {n}\nPAGINE PER COPIA: {pagine}\nFOGLI PER COPIA: {fogli} ({nup} PAGINE PER FOGLIO)\nTOTALE FOGLI CON {c} COPIE: {tot}\nSTAMPANTE: {stampante}\n\nSÌ = CORREGGI E STAMPA SOLO 1 COPIA PER FILE ({fogli} FOGLI)\nNO = MANTIENI LE IMPOSTAZIONI ({c} COPIE, {tot} FOGLI)\nANNULLA = NON STAMPARE");
-            match rfd::MessageDialog::new().set_title("STAMPA TUTTO").set_description(testo).set_level(rfd::MessageLevel::Warning).set_buttons(rfd::MessageButtons::YesNoCancel).show() {
-                rfd::MessageDialogResult::Yes => { self.st.copies = 1; self.st.save(); self.toast("COPIE IMPOSTATE A 1 PER OGNI FILE".into()); }
-                rfd::MessageDialogResult::No => {}
-                _ => return,
-            }
-        } else {
-            let testo = format!("STAMPARE TUTTE LE {n} SCHEDE APERTE?\n\nPAGINE: {pagine}\nFOGLI PER COPIA: {fogli} ({nup} PAGINE PER FOGLIO)\nCOPIE: {c}\nSTAMPANTE: {stampante}");
-            if !confirm("STAMPA TUTTO", &testo) { return; }
-        }
+        egui::Window::new("STAMPA TUTTO").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            ui.set_min_width(440.0);
+            ui.label(RichText::new("STAMPARE CON LE IMPOSTAZIONI ATTUALI?").strong().size(18.0));
+            ui.add_space(6.0);
+            if warn { ui.label(RichText::new(format!("ATTENZIONE: SONO IMPOSTATE {c} COPIE PER OGNI FILE.")).strong().color(ACCENT)); ui.add_space(4.0); }
+            ui.label(format!("SCHEDE APERTE: {n}"));
+            ui.label(format!("PAGINE PER COPIA: {pagine}"));
+            ui.label(format!("FOGLI PER COPIA: {fogli} ({nup} PAGINE PER FOGLIO)"));
+            ui.label(format!("COPIE PER OGNI FILE: {c}"));
+            ui.label(RichText::new(format!("TOTALE FOGLI: {tot}")).strong());
+            ui.label(format!("STAMPANTE: {stampante}"));
+            ui.label(format!("COLORE: {colore}"));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.add(Button::new(RichText::new("STAMPA").strong().size(16.0).color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(120.0, 38.0))).clicked() { go = true; }
+                if ui.add(Button::new(RichText::new("CAMBIA").size(16.0)).min_size(Vec2::new(110.0, 38.0))).on_hover_text("APRE LE IMPOSTAZIONI DI STAMPA").clicked() { change = true; }
+                if warn && ui.add(Button::new(RichText::new("1 COPIA PER FILE").size(16.0)).min_size(Vec2::new(150.0, 38.0))).on_hover_text("IMPOSTA 1 COPIA PER FILE E STAMPA").clicked() { one = true; }
+                if ui.add(Button::new(RichText::new("ANNULLA").size(16.0)).min_size(Vec2::new(110.0, 38.0))).clicked() { cancel = true; }
+            });
+        });
         let all: Vec<usize> = (0..n).collect();
-        self.print_docs(&all, true);
+        if go { self.show_pall = false; self.print_docs(&all, true); }
+        else if one { self.show_pall = false; self.st.copies = 1; self.st.save(); self.print_docs(&all, true); }
+        else if change { // porta alle impostazioni di stampa: li' "STAMPA TUTTO" stampa tutte le schede con le nuove impostazioni
+            self.show_pall = false;
+            if !matches!(self.tab, Tab::Doc(_)) { self.tab = Tab::Doc(0); }
+            self.show_print = true; self.draft = self.st.clone(); self.prev = 0; self.pv = None; self.pv_raw = None; self.pa_mode = true;
+        }
+        else if cancel || !open { self.show_pall = false; }
     }
 
     /// Stampa subito la scheda indicata; con piu' di una copia chiede conferma.
@@ -653,7 +679,7 @@ impl App {
                 (tk, ctx.load_texture("pv", egui::ColorImage::from_rgba_unmultiplied([*w, *h], &t), egui::TextureOptions::LINEAR))
             });
         }
-        let maxh = (ctx.screen_rect().height() - 200.0).max(320.0);
+        let maxh = (ctx.screen_rect().height() - 140.0).max(320.0);
         egui::Window::new("Stampa").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
             { // pulsanti e testi piu' grandi
                 let s = ui.style_mut();
@@ -664,7 +690,12 @@ impl App {
                 s.spacing.icon_width = 19.0;
                 s.spacing.slider_width = 190.0;
             }
+            if self.pa_mode {
+                ui.label(RichText::new(format!("STAMPA TUTTO: LE IMPOSTAZIONI VALGONO PER TUTTE LE {} SCHEDE APERTE (TUTTE LE PAGINE DI OGNI SCHEDA)", self.docs.len())).strong().color(ACCENT));
+                ui.add_space(4.0);
+            }
             ui.horizontal_top(|ui| {
+                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid(); // barra di scorrimento ben visibile quando serve
                 egui::ScrollArea::vertical().max_height(maxh).auto_shrink([true, true]).show(ui, |ui| {
                     ui.vertical(|ui| {
                         ui.set_width(390.0);
@@ -755,7 +786,7 @@ impl App {
             });
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.add(Button::new(RichText::new("Stampa").size(17.0).strong().color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(140.0, 40.0))).clicked() { go = true; }
+                if ui.add(Button::new(RichText::new(if self.pa_mode { "STAMPA TUTTO" } else { "Stampa" }).size(17.0).strong().color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(if self.pa_mode { 180.0 } else { 140.0 }, 40.0))).clicked() { go = true; }
                 if ui.add(Button::new(RichText::new("Annulla").size(17.0)).min_size(Vec2::new(115.0, 40.0))).clicked() { cancel = true; }
             });
         });
@@ -769,12 +800,18 @@ impl App {
         if drv_reset { self.draft.drv_mode.clear(); }
         if go {
             let c = self.draft.copies;
-            let nome = self.docs[di].name.clone();
-            if c > 1 && self.st.ask_copies && !confirm("Stampa", &format!("Sicuro di voler stampare {c} copie del file?\n\n{nome}")) {
+            let testo = if self.pa_mode { format!("Sicuro di voler stampare {c} copie dei file aperti?") } else { format!("Sicuro di voler stampare {c} copie del file?
+
+{}", self.docs[di].name) };
+            if c > 1 && self.st.ask_copies && !confirm("Stampa", &testo) {
                 // risposta "No": resta aperta la finestra di stampa
-            } else { self.st = self.draft.clone(); self.st.save(); self.show_print = false; self.print_docs(&[di], false); }
+            } else {
+                self.st = self.draft.clone(); self.st.save(); self.show_print = false;
+                if self.pa_mode { self.pa_mode = false; let all: Vec<usize> = (0..self.docs.len()).collect(); self.print_docs(&all, true); }
+                else { self.print_docs(&[di], false); }
+            }
         }
-        if cancel || !open { self.show_print = false; }
+        if cancel || !open { self.show_print = false; self.pa_mode = false; }
     }
 }
 
@@ -829,11 +866,13 @@ fn icon_btn_a(ui: &mut egui::Ui, ic: Ic, tip: &str, enabled: bool, active: bool)
 }
 
 /// Scheda con la "×" di chiusura integrata. Restituisce (risposta, chiusura_richiesta).
-fn tab_widget(ui: &mut egui::Ui, text: &str, selected: bool, tip: &str) -> (egui::Response, bool) {
+fn tab_widget(ui: &mut egui::Ui, text: &str, selected: bool, tip: &str, num: Option<usize>) -> (egui::Response, bool) {
     let col = if selected { Color32::from_gray(20) } else { Color32::from_gray(70) };
     let galley = ui.painter().layout_no_wrap(text.to_string(), egui::TextStyle::Button.resolve(ui.style()), col);
     let (pad, xw) = (10.0_f32, 18.0_f32);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(pad + galley.size().x + 8.0 + xw + 4.0, 26.0), egui::Sense::click_and_drag());
+    let extra = if num.is_some() { 13.0 } else { 0.0 };
+    let (full, resp) = ui.allocate_exact_size(Vec2::new(pad + galley.size().x + 8.0 + xw + 4.0, 26.0 + extra), egui::Sense::click_and_drag());
+    let rect = egui::Rect::from_min_size(full.min, Vec2::new(full.width(), 26.0));
     let xr = egui::Rect::from_center_size(egui::pos2(rect.right() - 4.0 - xw / 2.0, rect.center().y), Vec2::splat(xw));
     let hover_x = resp.hovered() && ui.input(|i| i.pointer.hover_pos()).map_or(false, |p| xr.contains(p));
     let close = resp.clicked() && resp.interact_pointer_pos().map_or(false, |p| xr.contains(p));
@@ -847,6 +886,7 @@ fn tab_widget(ui: &mut egui::Ui, text: &str, selected: bool, tip: &str) -> (egui
     let c = xr.center();
     p.line_segment([c + Vec2::new(-3.5, -3.5), c + Vec2::new(3.5, 3.5)], st);
     p.line_segment([c + Vec2::new(-3.5, 3.5), c + Vec2::new(3.5, -3.5)], st);
+    if let Some(k) = num { p.text(egui::pos2(rect.center().x, rect.bottom() + 7.0), egui::Align2::CENTER_CENTER, k.to_string(), egui::FontId::proportional(10.0), Color32::from_gray(100)); }
     (resp.on_hover_text(tip), close)
 }
 
@@ -919,10 +959,11 @@ impl eframe::App for App {
         let cur_doc = if let Tab::Doc(i) = self.tab { Some(i) } else { None };
         let maxed = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         let mut close: Option<usize> = None;
+        let (mut tabs_w, mut tabs_avail) = (0.0_f32, 0.0_f32);
         let (mut close_all, mut show_info, mut quit, mut fs_toggle) = (false, false, false, false);
         let want_scroll = std::mem::take(&mut self.scroll_tab);
         egui::TopBottomPanel::top("top")
-            .exact_height(38.0)
+            .exact_height(if self.tabs_overflow { 52.0 } else { 38.0 })
             .frame(egui::Frame::none().fill(BAR).inner_margin(egui::Margin::symmetric(6.0, 3.0)))
             .show(ctx, |ui| {
                 // tutta la barra e' una maniglia: trascinando negli spazi liberi si sposta la finestra; doppio clic = ingrandisci/ripristina
@@ -981,16 +1022,18 @@ impl eframe::App for App {
                                 let mut sc = egui::style::ScrollStyle::solid();
                                 sc.bar_width = 5.0; sc.bar_inner_margin = 1.0; sc.bar_outer_margin = 0.0;
                                 ui.spacing_mut().scroll = sc;
+                                tabs_avail = ui.available_width();
                             }
                             egui::ScrollArea::horizontal().id_salt("tabs").drag_to_scroll(false).auto_shrink([false, false]).show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 2.0;
                                     for i in 0..self.docs.len() {
                                         let sel = self.tab == Tab::Doc(i);
-                                        let (r, x) = tab_widget(ui, &short(&self.docs[i].name, 24), sel, &self.docs[i].name);
+                                        let (r, x) = tab_widget(ui, &short(&self.docs[i].name, 24), sel, &self.docs[i].name, if self.tabs_overflow { Some(i + 1) } else { None });
                                         if x || r.middle_clicked() { close = Some(i); } else if r.clicked() { self.tab = Tab::Doc(i); }
                                         if sel && want_scroll { r.scroll_to_me(Some(egui::Align::Center)); }
                                     }
+                                    tabs_w = ui.min_rect().width();
                                 });
                             });
                         });
@@ -1002,6 +1045,10 @@ impl eframe::App for App {
         if show_info { self.show_info = true; }
         if ctrl_w { close = cur_doc; }
         if close_all { self.docs.clear(); self.tab = Tab::Home; self.show_print = false; self.pv = None; self.pv_raw = None; }
+        if tabs_w > 0.0 { // schede troppe per la barra: compaiono i numeri sotto le schede
+            let ov = tabs_w > tabs_avail + 1.0;
+            if ov != self.tabs_overflow { self.tabs_overflow = ov; ctx.request_repaint(); }
+        }
         if let Some(i) = close.filter(|&i| i < self.docs.len()) {
             self.docs.remove(i);
             self.tab = match self.tab { Tab::Doc(j) if j == i => Tab::Home, Tab::Doc(j) if j > i => Tab::Doc(j - 1), t => t };
@@ -1062,7 +1109,8 @@ impl eframe::App for App {
                     let target_y = if self.jump { shit.filter(|(p, _)| *p == cur).and_then(|(_, st)| chars.get(st)).filter(|c| c.r[3] > c.r[1]).map(|c| ((ph - c.r[3]) / ph * h - 100.0).max(0.0)) } else { None };
                     let mut sa = egui::ScrollArea::both().id_salt((i, cur)).auto_shrink([false; 2]).drag_to_scroll(pan);
                     if let Some(y) = target_y { sa = sa.vertical_scroll_offset(y); }
-                    sa.show(ui, |ui| {
+                    else if let Some(bottom) = self.scroll_reset.take() { sa = sa.vertical_scroll_offset(if bottom { 1.0e9 } else { 0.0 }); }
+                    let out = sa.show(ui, |ui| {
                         ui.add_space(8.0);
                         let img = egui::Image::new(egui::load::SizedTexture::new(t.id(), Vec2::new(w, h))).sense(if pan { egui::Sense::click() } else { egui::Sense::click_and_drag() });
                         let resp = ui.vertical_centered(|ui| ui.add(img)).inner;
@@ -1108,6 +1156,23 @@ impl eframe::App for App {
                         });
                     });
                     if target_y.is_some() { self.jump = false; }
+                    // scorrendo oltre il fondo (o l'inizio) della pagina con rotella, touchpad o mano si passa alla pagina successiva (o precedente)
+                    let max_off = (out.content_size.y - out.inner_rect.height()).max(0.0);
+                    let dy = ctx.input(|i| i.raw_scroll_delta.y + if pan && i.pointer.primary_down() { i.pointer.delta().y } else { 0.0 });
+                    if dy != 0.0 {
+                        if self.over_at.elapsed() > Duration::from_millis(450) { self.over_acc = 0.0; }
+                        self.over_at = Instant::now();
+                        if dy < 0.0 && self.edge.1 { self.over_acc += -dy; }
+                        else if dy > 0.0 && self.edge.0 { self.over_acc -= dy; }
+                        else { self.over_acc = 0.0; }
+                    }
+                    self.edge = (out.state.offset.y <= 0.5, out.state.offset.y >= max_off - 0.5);
+                    let n_pages = self.docs[i].sizes.len();
+                    if self.over_acc >= 140.0 && cur + 1 < n_pages {
+                        self.docs[i].cur = cur + 1; self.over_acc = 0.0; self.edge = (true, false); ctx.request_repaint();
+                    } else if self.over_acc <= -140.0 && cur > 0 {
+                        self.docs[i].cur = cur - 1; self.over_acc = 0.0; self.edge = (false, true); self.scroll_reset = Some(true); ctx.request_repaint();
+                    } else if self.over_acc.abs() >= 140.0 { self.over_acc = 0.0; }
                 }
             }
         });
@@ -1176,7 +1241,9 @@ impl eframe::App for App {
             if q { self.print_one(i); }
         }
         if all { self.print_all(); }
+        if self.show_pall { self.pall_window(ctx); }
         if self.show_cfg { self.settings_window(ctx); }
+        if !self.show_print { self.pa_mode = false; }
         if self.show_print { if let Tab::Doc(i) = self.tab { self.print_dialog(ctx, i); } else { self.show_print = false; } }
         if self.show_info {
             let mut open = true;
