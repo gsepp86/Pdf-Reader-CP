@@ -1,4 +1,4 @@
-// PDF Reader CP 2.0 - Programma opensource progettato da Peppe CP con l'aiuto della IA.
+// PDF Reader CP 2.2 - Programma opensource progettato da Peppe CP con l'aiuto della IA.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use eframe::egui::{self, Button, Color32, RichText, Vec2};
 use pdfium_render::prelude::*;
@@ -240,7 +240,7 @@ fn err(msg: &str) {
 #[cfg(windows)]
 mod spool {
     use windows::{core::{w, PCWSTR}, Win32::Foundation::HANDLE, Win32::Graphics::Gdi::*, Win32::Graphics::Printing::{ClosePrinter, DocumentPropertiesW, OpenPrinterW}, Win32::Storage::Xps::*, Win32::UI::WindowsAndMessaging::GetForegroundWindow};
-    pub struct Job { dc: HDC }
+    pub struct Job { dc: HDC, aborted: bool }
 
     /// Crea il contesto di stampa, applicando (se presenti) le impostazioni del driver (DEVMODE).
     unsafe fn make_dc(printer: &str, devmode: Option<&[u8]>) -> HDC {
@@ -310,7 +310,7 @@ mod spool {
                 let n: Vec<u16> = name.encode_utf16().chain([0]).collect();
                 let di = DOCINFOW { cbSize: std::mem::size_of::<DOCINFOW>() as i32, lpszDocName: PCWSTR(n.as_ptr()), ..Default::default() };
                 if StartDocW(dc, &di) <= 0 { let _ = DeleteDC(dc); return Err("Avvio del lavoro di stampa non riuscito".into()); }
-                Ok(Job { dc })
+                Ok(Job { dc, aborted: false })
             }
         }
         /// Area stampabile in punti e risoluzione (dpi).
@@ -320,6 +320,8 @@ mod spool {
                 (GetDeviceCaps(self.dc, HORZRES) as f32 / d * 72.0, GetDeviceCaps(self.dc, VERTRES) as f32 / d * 72.0, d)
             }
         }
+        /// Annulla il lavoro: non viene mandato alla stampante.
+        pub fn abort(&mut self) { if !self.aborted { self.aborted = true; unsafe { AbortDoc(self.dc); } } }
         pub fn page(&self, bgra: &[u8], w: i32, h: i32, x: i32, y: i32, dw: i32, dh: i32) {
             unsafe {
                 StartPage(self.dc);
@@ -330,16 +332,23 @@ mod spool {
             }
         }
     }
-    impl Drop for Job { fn drop(&mut self) { unsafe { EndDoc(self.dc); let _ = DeleteDC(self.dc); } } }
+    impl Drop for Job { fn drop(&mut self) { unsafe { if !self.aborted { EndDoc(self.dc); } let _ = DeleteDC(self.dc); } } }
 }
 #[cfg(not(windows))]
 mod spool {
+    pub struct Job;
+    impl Job {
+        pub fn new(_: &str, _: &str, _: Option<&[u8]>) -> Result<Job, String> { Err("La stampa e' disponibile solo su Windows".into()) }
+        pub fn area(&self) -> (f32, f32, f32) { (595.0, 842.0, 72.0) }
+        pub fn abort(&mut self) {}
+        pub fn page(&self, _: &[u8], _: i32, _: i32, _: i32, _: i32, _: i32, _: i32) {}
+    }
     pub fn driver_dialog(_: &str, _: Option<&[u8]>) -> Option<Vec<u8>> { None }
     pub fn paper_pts(_: &str, _: Option<&[u8]>) -> Option<(f32, f32)> { None }
 }
 
 // ---------- applicazione ----------
-struct Doc { pdf: PdfDocument<'static>, path: PathBuf, name: String, sizes: Vec<(f32, f32)>, cur: usize, zoom: f32, fitpage: bool, tex: HashMap<(usize, i32), egui::TextureHandle>, text: HashMap<usize, Vec<TCh>>, ptext: HashMap<usize, Vec<char>> }
+struct Doc { id: u64, pdf: PdfDocument<'static>, path: PathBuf, name: String, sizes: Vec<(f32, f32)>, cur: usize, zoom: f32, fitpage: bool, tex: HashMap<(usize, i32), egui::TextureHandle>, text: HashMap<usize, Vec<TCh>>, ptext: HashMap<usize, Vec<char>> }
 #[derive(PartialEq, Clone, Copy)]
 enum Tab { Home, Doc(usize) }
 type PvKey = (u64, ColorMode, i32); // versione del foglio + colore + chiaro/scuro
@@ -348,6 +357,13 @@ type RawKey = (usize, usize, PageSel, String, u32, bool, ScaleMode, u32, bool, b
 struct TCh { c: char, r: [f32; 4] }
 /// Selezione di testo: documento, pagina, indice del primo e dell'ultimo carattere.
 struct Sel { doc: usize, page: usize, a: usize, b: usize }
+
+/// Lavoro di stampa in corso: procede un passo (un foglio) per volta cosi' l'interfaccia resta viva e mostra il cerchio di caricamento.
+struct PrintTask {
+    ids: Vec<u64>, st: Settings, di: usize, job: Option<spool::Job>,
+    sheets: Vec<Vec<usize>>, order: Vec<usize>, pos: usize, area: (f32, f32, f32),
+    last: Option<(usize, usize, usize, Vec<u8>)>, total: usize, done: usize, cancel: bool,
+}
 
 struct App {
     pdfium: &'static Pdfium, docs: Vec<Doc>, tab: Tab,
@@ -360,6 +376,7 @@ struct App {
     show_cfg: bool, cfg: Settings, cfg_tab: usize,
     show_pall: bool, pa_mode: bool,
     over_acc: f32, over_at: Instant, edge: (bool, bool), scroll_reset: Option<bool>, tabs_overflow: bool,
+    task: Option<PrintTask>, tab_drag: Option<usize>, next_id: u64,
 }
 
 impl App {
@@ -386,9 +403,19 @@ impl App {
         detect_byte_order(pdfium);
         let start_pan = st.start_pan;
         let ipc = listener.map(|l| { let (tx, rx) = std::sync::mpsc::channel(); serve(l, tx, cc.egui_ctx.clone()); rx });
-        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false };
+        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: None, tab_drag: None, next_id: 1 };
         for a in init { app.open(a); }
         app
+    }
+
+    /// Sposta una scheda (trascinandola): STAMPA TUTTO stampa le schede nell'ordine in cui sono disposte.
+    fn move_tab(&mut self, from: usize, to: usize) {
+        if from >= self.docs.len() || to >= self.docs.len() { return; }
+        let cur_id = if let Tab::Doc(i) = self.tab { self.docs.get(i).map(|d| d.id) } else { None };
+        let d = self.docs.remove(from);
+        self.docs.insert(to, d);
+        if let Some(id) = cur_id { if let Some(i) = self.docs.iter().position(|d| d.id == id) { self.tab = Tab::Doc(i); } }
+        self.sel = None; self.pv = None; self.pv_raw = None; self.show_print = false; self.scroll_tab = true;
     }
 
     fn toast(&mut self, s: String) { self.msg = s; self.msg_at = Some(Instant::now()); }
@@ -448,7 +475,8 @@ impl App {
         match (pdf, sizes) {
             (Some(pdf), Some(s)) if !s.is_empty() => {
                 let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                self.docs.push(Doc { pdf, path, name, sizes: s, cur: 0, zoom: 1.0, fitpage: self.st.fit_page, tex: HashMap::new(), text: HashMap::new(), ptext: HashMap::new() });
+                let id = self.next_id; self.next_id += 1;
+                self.docs.push(Doc { id, pdf, path, name, sizes: s, cur: 0, zoom: 1.0, fitpage: self.st.fit_page, tex: HashMap::new(), text: HashMap::new(), ptext: HashMap::new() });
                 self.tab = Tab::Doc(self.docs.len() - 1);
                 self.scroll_tab = true;
             }
@@ -480,45 +508,75 @@ impl App {
         Some(t)
     }
 
-    /// Stampa le schede indicate. `all_pages` = true: tutte le pagine di ogni scheda (STAMPA TUTTO).
-    #[cfg(windows)]
-    fn do_print(&self, idx: &[usize], all_pages: bool) -> Result<usize, String> {
-        if self.st.printer.is_empty() { return Err("Nessuna stampante selezionata".into()); }
+    /// Avvia la stampa delle schede indicate (nell'ordine dato). `all_pages` = true: tutte le pagine di ogni scheda (STAMPA TUTTO).
+    fn print_docs(&mut self, idx: &[usize], all_pages: bool) {
+        if self.task.is_some() { self.toast("Stampa gia' in corso".into()); return; }
+        if self.st.printer.is_empty() { err("Nessuna stampante selezionata"); return; }
         let mut st = self.st.clone();
         if all_pages { st.sel = PageSel::All; }
-        for &di in idx {
-            let d = &self.docs[di];
-            let pages = pages_for(&st, d.cur, d.sizes.len());
+        let ids: Vec<u64> = idx.iter().filter_map(|&i| self.docs.get(i).map(|d| d.id)).collect();
+        if ids.is_empty() { return; }
+        let nup = st.nup.max(1) as usize;
+        let c = st.copies.max(1) as usize;
+        let total: usize = ids.iter().filter_map(|id| self.docs.iter().find(|d| d.id == *id))
+            .map(|d| ((pages_for(&st, d.cur, d.sizes.len()).len() + nup - 1) / nup) * c).sum();
+        self.task = Some(PrintTask { ids, st, di: 0, job: None, sheets: vec![], order: vec![], pos: 0, area: (595.0, 842.0, 72.0), last: None, total, done: 0, cancel: false });
+    }
+
+    /// Un passo del lavoro di stampa. Quando finisce, il lavoro e' in coda nella stampante e il cerchio di caricamento sparisce.
+    fn print_step(&mut self, ctx: &egui::Context) {
+        let Some(mut t) = self.task.take() else { return };
+        if t.cancel {
+            if let Some(j) = t.job.as_mut() { j.abort(); }
+            self.toast("Stampa annullata".into());
+            return;
+        }
+        match self.advance(&mut t) {
+            Ok(true) => { self.task = Some(t); ctx.request_repaint(); }
+            Ok(false) => { let (p, n) = (t.st.printer.clone(), t.ids.len()); self.toast(format!("Lavoro inviato a «{p}» ({n} schede in coda)")); }
+            Err(e) => { if let Some(j) = t.job.as_mut() { j.abort(); } err(&e); }
+        }
+    }
+
+    /// Esegue un'unita' di lavoro: apre il lavoro di una scheda, oppure invia un foglio, oppure chiude il lavoro (che va in coda).
+    fn advance(&self, t: &mut PrintTask) -> Result<bool, String> {
+        if t.job.is_none() { // apri la scheda successiva
+            if t.di >= t.ids.len() { return Ok(false); }
+            let Some(d) = self.docs.iter().find(|d| d.id == t.ids[t.di]) else { t.di += 1; return Ok(true); }; // scheda chiusa nel frattempo
+            let pages = pages_for(&t.st, d.cur, d.sizes.len());
             if pages.is_empty() { return Err(format!("Nessuna pagina da stampare in {}", d.name)); }
-            let nup = st.nup.max(1) as usize;
-            let sheets: Vec<Vec<usize>> = pages.chunks(nup).map(|c| c.to_vec()).collect();
-            let c = st.copies.max(1) as usize;
-            let order: Vec<usize> = if st.collate { (0..c).flat_map(|_| 0..sheets.len()).collect() } else { (0..sheets.len()).flat_map(|s| std::iter::repeat(s).take(c)).collect() };
-            let dm: Option<Vec<u8>> = if st.drv_printer == st.printer && !st.drv_mode.is_empty() { Some(from_hex(&st.drv_mode)) } else { None };
-            let job = spool::Job::new(&st.printer, &d.name, dm.as_deref()).or_else(|e| if dm.is_some() { spool::Job::new(&st.printer, &d.name, None) } else { Err(e) })?;
-            let (aw, ah, dpi) = job.area();
-            let mut last: Option<(usize, usize, usize, Vec<u8>)> = None;
-            for s in order {
-                if last.as_ref().map(|l| l.0) != Some(s) {
-                    let (w, h, mut b) = compose(&self.pdfium, d, &sheets[s], (aw, ah), &st, 300.0 / 72.0, true).ok_or("Rendering della pagina non riuscito")?;
-                    for q in b.chunks_exact_mut(4) { q.swap(0, 2); } // RGBA -> BGRA per GDI
-                    last = Some((s, w, h, b));
-                }
-                let l = last.as_ref().unwrap();
+            let nup = t.st.nup.max(1) as usize;
+            t.sheets = pages.chunks(nup).map(|c| c.to_vec()).collect();
+            let (c, ns) = (t.st.copies.max(1) as usize, t.sheets.len());
+            t.order = if t.st.collate { (0..c).flat_map(|_| 0..ns).collect() } else { (0..ns).flat_map(|s| std::iter::repeat(s).take(c)).collect() };
+            let dm: Option<Vec<u8>> = if t.st.drv_printer == t.st.printer && !t.st.drv_mode.is_empty() { Some(from_hex(&t.st.drv_mode)) } else { None };
+            let job = spool::Job::new(&t.st.printer, &d.name, dm.as_deref()).or_else(|e| if dm.is_some() { spool::Job::new(&t.st.printer, &d.name, None) } else { Err(e) })?;
+            t.area = job.area(); t.pos = 0; t.last = None; t.job = Some(job);
+            return Ok(true);
+        }
+        if t.pos < t.order.len() { // invia un foglio
+            let Some(d) = self.docs.iter().find(|d| d.id == t.ids[t.di]) else {
+                if let Some(j) = t.job.as_mut() { j.abort(); }
+                t.job = None; t.di += 1; return Ok(true);
+            };
+            let s = t.order[t.pos];
+            if t.last.as_ref().map(|l| l.0) != Some(s) {
+                let (aw, ah, _) = t.area;
+                let (w, h, mut b) = compose(&self.pdfium, d, &t.sheets[s], (aw, ah), &t.st, 300.0 / 72.0, true).ok_or("Rendering della pagina non riuscito")?;
+                for q in b.chunks_exact_mut(4) { q.swap(0, 2); } // RGBA -> BGRA per GDI
+                t.last = Some((s, w, h, b));
+            }
+            if let (Some(l), Some(job)) = (t.last.as_ref(), t.job.as_ref()) {
+                let (aw, ah, dpi) = t.area;
                 let f = dpi / 72.0;
                 job.page(&l.3, l.1 as i32, l.2 as i32, 0, 0, (aw * f) as i32, (ah * f) as i32);
             }
+            t.pos += 1; t.done += 1;
+            return Ok(true);
         }
-        Ok(idx.len())
-    }
-    #[cfg(not(windows))]
-    fn do_print(&self, _idx: &[usize], _all: bool) -> Result<usize, String> { Err("La stampa e' disponibile solo su Windows".into()) }
-
-    fn print_docs(&mut self, idx: &[usize], all_pages: bool) {
-        match self.do_print(idx, all_pages) {
-            Ok(n) => { let p = self.st.printer.clone(); self.toast(format!("Inviate {n} schede a «{p}»")); }
-            Err(e) => err(&e),
-        }
+        t.job = None; // chiude il lavoro: la scheda e' in coda nella stampante
+        t.di += 1;
+        Ok(true)
     }
 
     /// STAMPA TUTTO: tutte le schede aperte (ognuna per intero), in sequenza, con un solo messaggio di conferma.
@@ -551,6 +609,7 @@ impl App {
             ui.label(RichText::new(format!("TOTALE FOGLI: {tot}")).strong());
             ui.label(format!("STAMPANTE: {stampante}"));
             ui.label(format!("COLORE: {colore}"));
+            ui.label(RichText::new("LE SCHEDE VENGONO STAMPATE NELL'ORDINE IN CUI SONO DISPOSTE").weak().small());
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 if ui.add(Button::new(RichText::new("STAMPA").strong().size(16.0).color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(120.0, 38.0))).clicked() { go = true; }
@@ -960,6 +1019,7 @@ impl eframe::App for App {
         let maxed = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         let mut close: Option<usize> = None;
         let (mut tabs_w, mut tabs_avail) = (0.0_f32, 0.0_f32);
+        let mut reorder: Option<(usize, usize)> = None;
         let (mut close_all, mut show_info, mut quit, mut fs_toggle) = (false, false, false, false);
         let want_scroll = std::mem::take(&mut self.scroll_tab);
         egui::TopBottomPanel::top("top")
@@ -1027,11 +1087,29 @@ impl eframe::App for App {
                             egui::ScrollArea::horizontal().id_salt("tabs").drag_to_scroll(false).auto_shrink([false, false]).show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 2.0;
+                                    let mut rects: Vec<egui::Rect> = vec![];
                                     for i in 0..self.docs.len() {
                                         let sel = self.tab == Tab::Doc(i);
                                         let (r, x) = tab_widget(ui, &short(&self.docs[i].name, 24), sel, &self.docs[i].name, if self.tabs_overflow { Some(i + 1) } else { None });
                                         if x || r.middle_clicked() { close = Some(i); } else if r.clicked() { self.tab = Tab::Doc(i); }
+                                        rects.push(r.rect);
+                                        if r.drag_started() { self.tab_drag = Some(i); }
                                         if sel && want_scroll { r.scroll_to_me(Some(egui::Align::Center)); }
+                                    }
+                                    // trascinamento di una scheda: segno di inserimento e spostamento al rilascio
+                                    if let Some(from) = self.tab_drag {
+                                        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                                        if let (Some(pp), false) = (ctx.input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos())), rects.is_empty()) {
+                                            let ins = rects.iter().filter(|r| r.center().x < pp.x).count();
+                                            let x = if ins < rects.len() { rects[ins].left() - 1.0 } else { rects[rects.len() - 1].right() + 1.0 };
+                                            let top = rects[0].top();
+                                            ui.painter().line_segment([egui::pos2(x, top), egui::pos2(x, top + 26.0)], egui::Stroke::new(2.5, ACCENT));
+                                            if !ctx.input(|i| i.pointer.primary_down()) {
+                                                let to = if ins > from { ins - 1 } else { ins };
+                                                if to != from { reorder = Some((from, to)); }
+                                                self.tab_drag = None;
+                                            }
+                                        } else { self.tab_drag = None; }
                                     }
                                     tabs_w = ui.min_rect().width();
                                 });
@@ -1045,6 +1123,7 @@ impl eframe::App for App {
         if show_info { self.show_info = true; }
         if ctrl_w { close = cur_doc; }
         if close_all { self.docs.clear(); self.tab = Tab::Home; self.show_print = false; self.pv = None; self.pv_raw = None; }
+        if let Some((from, to)) = reorder { self.move_tab(from, to); }
         if tabs_w > 0.0 { // schede troppe per la barra: compaiono i numeri sotto le schede
             let ov = tabs_w > tabs_avail + 1.0;
             if ov != self.tabs_overflow { self.tabs_overflow = ov; ctx.request_repaint(); }
@@ -1241,6 +1320,22 @@ impl eframe::App for App {
             if q { self.print_one(i); }
         }
         if all { self.print_all(); }
+        // ---- stampa in corso: cerchio di caricamento finche' il lavoro non e' in coda nella stampante ----
+        let mut cancel_print = false;
+        if let Some(t) = &self.task {
+            let testo = format!("Invio alla stampante…  {}/{} fogli · scheda {}/{}", t.done.min(t.total), t.total, (t.di + 1).min(t.ids.len()), t.ids.len());
+            egui::Area::new(egui::Id::new("printing")).order(egui::Order::Foreground).anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -16.0]).show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(20.0));
+                        ui.label(RichText::new(testo).strong());
+                        if ui.small_button("Annulla").clicked() { cancel_print = true; }
+                    });
+                });
+            });
+        }
+        if cancel_print { if let Some(t) = self.task.as_mut() { t.cancel = true; } }
+        if self.task.is_some() { self.print_step(ctx); }
         if self.show_pall { self.pall_window(ctx); }
         if self.show_cfg { self.settings_window(ctx); }
         if !self.show_print { self.pa_mode = false; }
@@ -1252,7 +1347,7 @@ impl eframe::App for App {
                     ui.image(egui::load::SizedTexture::new(self.logo.id(), Vec2::splat(72.0)));
                     ui.heading("PDF Reader CP");
                     ui.label("Programma opensource progettato da Peppe CP con l'aiuto della IA.");
-                    ui.label(RichText::new("Versione 2.0").weak());
+                    ui.label(RichText::new("Versione 2.2").weak());
                     ui.add_space(8.0);
                     ui.separator();
                     ui.scope(|ui| {
@@ -1270,6 +1365,9 @@ impl eframe::App for App {
             });
             if !open { self.show_info = false; }
         }
+        // contorno nero attorno alla finestra (la finestra non ha la cornice di Windows)
+        ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("window_outline")))
+            .rect_stroke(ctx.screen_rect().shrink(0.75), 0.0, egui::Stroke::new(1.5, Color32::from_gray(75)));
         if self.st != before { self.st.save(); } // stampante / "N su 1" scelti nella barra restano per "Stampa subito"
     }
 }

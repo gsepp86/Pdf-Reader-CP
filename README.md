@@ -1,16 +1,11 @@
-# PDF Reader CP 2.0
+# PDF Reader CP 2.2
 Programma opensource progettato da Peppe CP con l'aiuto della IA.
 
 Lettore PDF a schede in Rust (egui + PDFium): una sola barra in alto con schede e comandi di stampa, documento a tutto schermo.
 
-
-## Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto il tempo che ti farò risparmiare per stampare grossi quantitativi di pdf ;-)
-
-[![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://paypal.me/PeppeCP)
-
 ## Creare l'installer per Windows
 **Metodo 1 - sul tuo PC (Windows 10/11 x64):** installa Rust (https://rustup.rs), poi doppio clic su `build.bat`.
-Scarica da solo pdfium.dll e Inno Setup e produce `dist\PDFReaderCP_Setup_2.0.exe`.
+Scarica da solo pdfium.dll e Inno Setup e produce `dist\PDFReaderCP_Setup_2.2.exe`.
 
 **Metodo 2 - senza installare nulla:** carica la cartella su GitHub, poi Actions > "Crea installer" > Run workflow.
 L'installer si scarica dagli "Artifacts" a fine lavoro.
@@ -50,3 +45,6 @@ https://github.com/gsepp86/Pdf-Reader-CP
 - **Cambio pagina scorrendo**: con la rotella, il touchpad o lo strumento mano, arrivati in fondo alla pagina si continua sulla successiva (e in alto sulla precedente), senza cliccare i pulsanti.
 - **Schede tante**: quando non entrano nella barra compaiono piccoli numeri 1, 2, 3... sotto ogni scheda.
 - **Finestra di stampa**: la colonna delle impostazioni (compreso il cursore Scuro-Chiaro in "Colore e luminosita'") usa piu' altezza e ha una barra di scorrimento visibile se serve.
+- **Stampa in background**: durante l'invio di molti file compare in basso a destra un cerchio di caricamento con l'avanzamento (fogli e schede) e il pulsante Annulla; sparisce quando il lavoro e' in coda nella stampante.
+- **Schede spostabili**: trascina una scheda per cambiarne la posizione; STAMPA TUTTO stampa le schede nell'ordine in cui sono disposte.
+- **Contorno grigio scuro** attorno alla finestra.

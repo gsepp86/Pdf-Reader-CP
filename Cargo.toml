@@ -1,6 +1,6 @@
 [package]
 name = "pdf-reader-cp"
-version = "2.0.0"
+version = "2.2.0"
 edition = "2021"
 description = "PDF Reader CP - lettore PDF opensource con stampa rapida"
 

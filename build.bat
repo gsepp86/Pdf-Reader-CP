@@ -23,7 +23,7 @@ cargo build --release || goto fail
 copy /y vendor\pdfium.dll target\release\ >nul
 "%ISCC%" installer\installer.iss || goto fail
 echo.
-echo FATTO: dist\PDFReaderCP_Setup_2.0.exe
+echo FATTO: dist\PDFReaderCP_Setup_2.2.exe
 pause
 exit /b 0
 :findiscc
