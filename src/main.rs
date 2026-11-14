@@ -25,15 +25,53 @@ enum ScaleMode { Fit, Actual, Custom }
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
 enum ColorMode { Color, Gray, Bw }
 
+/// Impostazioni di stampa all'avvio: ultime usate oppure quelle scelte dall'utente.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+enum StartMode { Last, Mine }
+
+/// "Le mie impostazioni predefinite" di stampa (stampante, copie, colore e funzioni del driver, es. fronte/retro).
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
-struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, border: bool, color: ColorMode, bright: i32, drv_printer: String, drv_mode: String, background: bool, start_max: bool, start_pan: bool, fit_page: bool, ask_copies: bool }
+struct PrintPrefs { printer: String, copies: u32, color: ColorMode, bright: i32, drv_printer: String, drv_mode: String }
+impl Default for PrintPrefs {
+    fn default() -> Self { Self { printer: String::new(), copies: 1, color: ColorMode::Color, bright: 0, drv_printer: String::new(), drv_mode: String::new() } }
+}
+impl PrintPrefs {
+    fn from_settings(st: &Settings) -> Self {
+        Self { printer: st.printer.clone(), copies: st.copies, color: st.color, bright: st.bright, drv_printer: st.drv_printer.clone(), drv_mode: st.drv_mode.clone() }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default)]
+struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, border: bool, color: ColorMode, bright: i32, drv_printer: String, drv_mode: String, background: bool, start_max: bool, start_pan: bool, fit_page: bool, ask_copies: bool, start_mode: StartMode, reset_std: bool, use_driver_defaults: bool, mine: PrintPrefs }
 impl Default for Settings {
     fn default() -> Self {
-        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, border: true, color: ColorMode::Color, bright: 0, drv_printer: String::new(), drv_mode: String::new(), background: false, start_max: true, start_pan: false, fit_page: false, ask_copies: true }
+        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, border: true, color: ColorMode::Color, bright: 0, drv_printer: String::new(), drv_mode: String::new(), background: false, start_max: true, start_pan: false, fit_page: false, ask_copies: true, start_mode: StartMode::Last, reset_std: true, use_driver_defaults: true, mine: PrintPrefs::default() }
     }
 }
 impl Settings {
+    /// Politica di avvio per la stampa: ultime impostazioni o "le mie predefinite"; poi ripristino della stampa standard
+    /// (1 su 1, tutte le pagine, scala adatta) e delle impostazioni predefinite del driver (es. fronte/retro).
+    fn apply_startup(&mut self, printers: &[String]) {
+        if self.start_mode == StartMode::Mine {
+            let m = self.mine.clone();
+            if !m.printer.is_empty() && printers.contains(&m.printer) { self.printer = m.printer; }
+            self.copies = m.copies.max(1);
+            self.color = m.color;
+            self.bright = m.bright;
+            self.drv_printer = m.drv_printer;
+            self.drv_mode = m.drv_mode;
+        } else {
+            if self.reset_std { self.copies = 1; }
+            if self.use_driver_defaults { self.drv_printer.clear(); self.drv_mode.clear(); } // si usano le impostazioni predefinite del driver
+        }
+        if self.reset_std {
+            self.nup = 1; self.sel = PageSel::All; self.custom = "1-".into();
+            self.scale = ScaleMode::Fit; self.pct = 100; self.collate = true;
+        }
+    }
+
     fn path() -> Option<PathBuf> { dirs::config_dir().map(|d| d.join("PDFReaderCP").join("settings.json")) }
     fn load() -> Self {
         Self::path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
@@ -396,6 +434,7 @@ impl App {
         printers.sort_by_key(|p| p.to_lowercase()); // ordine alfabetico
         printers.dedup();
         let mut st = Settings::load();
+        st.apply_startup(&printers);
         if !printers.contains(&st.printer) {
             st.printer = printers::get_default_printer().map(|p| p.name).or_else(|| printers.first().cloned()).unwrap_or_default();
         }
@@ -639,6 +678,7 @@ impl App {
     /// Finestra Impostazioni: si modifica una copia e si applica/salva con "Salva".
     fn settings_window(&mut self, ctx: &egui::Context) {
         let (mut open, mut save, mut cancel, mut reset) = (true, false, false, false);
+        let (mut cfg_drv, mut take) = (false, false);
         egui::Window::new("Impostazioni").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
             ui.set_min_width(470.0);
             ui.horizontal(|ui| {
@@ -669,27 +709,40 @@ impl App {
                 });
             } else {
                 ui.group(|ui| {
-                    ui.label(RichText::new("Stampa").strong().color(ACCENT));
-                    ui.horizontal(|ui| {
-                        ui.label("Stampante:");
-                        egui::ComboBox::from_id_salt("cfg_pr").width(300.0).selected_text(self.cfg.printer.clone()).show_ui(ui, |ui| {
-                            for p in &self.printers { ui.selectable_value(&mut self.cfg.printer, p.clone(), p); }
+                    ui.label(RichText::new("All'avvio del programma").strong().color(ACCENT));
+                    ui.radio_value(&mut self.cfg.start_mode, StartMode::Last, "Usa le ultime impostazioni di stampa utilizzate");
+                    ui.radio_value(&mut self.cfg.start_mode, StartMode::Mine, "Usa le mie impostazioni predefinite (qui sotto)");
+                    ui.checkbox(&mut self.cfg.reset_std, "Ripristina sempre la stampa standard (1 su 1, tutte le pagine)");
+                    ui.checkbox(&mut self.cfg.use_driver_defaults, "Usa le impostazioni predefinite del driver (es. fronte/retro)");
+                });
+                ui.add_enabled_ui(self.cfg.start_mode == StartMode::Mine, |ui| {
+                    ui.group(|ui| {
+                        ui.label(RichText::new("Le mie impostazioni predefinite").strong().color(ACCENT));
+                        ui.horizontal(|ui| {
+                            ui.label("Stampante:");
+                            egui::ComboBox::from_id_salt("cfg_pr").width(300.0).selected_text(self.cfg.mine.printer.clone()).show_ui(ui, |ui| {
+                                for p in &self.printers { ui.selectable_value(&mut self.cfg.mine.printer, p.clone(), p); }
+                            });
                         });
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Copie:");
-                        ui.add(egui::DragValue::new(&mut self.cfg.copies).range(1..=99));
-                        ui.label("Pagine per foglio:");
-                        egui::ComboBox::from_id_salt("cfg_nu").width(80.0).selected_text(format!("{} su 1", self.cfg.nup)).show_ui(ui, |ui| {
-                            for k in NUPS { ui.selectable_value(&mut self.cfg.nup, k, format!("{k} su 1")); }
+                        ui.horizontal(|ui| {
+                            ui.label("Copie:");
+                            ui.add(egui::DragValue::new(&mut self.cfg.mine.copies).range(1..=99));
                         });
+                        ui.horizontal(|ui| {
+                            ui.label("Colore:");
+                            ui.radio_value(&mut self.cfg.mine.color, ColorMode::Color, "Colori");
+                            ui.radio_value(&mut self.cfg.mine.color, ColorMode::Gray, "Scala di grigi");
+                            ui.radio_value(&mut self.cfg.mine.color, ColorMode::Bw, "Bianco e nero");
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.add(Button::new("Impostazioni driver stampante…").min_size(Vec2::new(250.0, 32.0))).clicked() { cfg_drv = true; }
+                            if !self.cfg.mine.drv_mode.is_empty() { ui.label(RichText::new("attive").weak()); }
+                        });
+                        if ui.add(Button::new("Prendi le impostazioni di stampa attuali").min_size(Vec2::new(250.0, 32.0))).clicked() { take = true; }
                     });
-                    ui.horizontal(|ui| {
-                        ui.label("Colore:");
-                        ui.radio_value(&mut self.cfg.color, ColorMode::Color, "Colori");
-                        ui.radio_value(&mut self.cfg.color, ColorMode::Gray, "Scala di grigi");
-                        ui.radio_value(&mut self.cfg.color, ColorMode::Bw, "Bianco e nero");
-                    });
+                });
+                ui.group(|ui| {
+                    ui.label(RichText::new("Conferme").strong().color(ACCENT));
                     ui.checkbox(&mut self.cfg.ask_copies, "Chiedi conferma quando stampo più di una copia");
                 });
             }
@@ -702,6 +755,15 @@ impl App {
             });
         });
         if reset { let p = self.cfg.printer.clone(); self.cfg = Settings::default(); self.cfg.printer = p; }
+        if cfg_drv {
+            if self.cfg.mine.printer.is_empty() { self.cfg.mine.printer = self.st.printer.clone(); }
+            let cur = if self.cfg.mine.drv_printer == self.cfg.mine.printer && !self.cfg.mine.drv_mode.is_empty() { Some(from_hex(&self.cfg.mine.drv_mode)) } else { None };
+            if let Some(dm) = spool::driver_dialog(&self.cfg.mine.printer, cur.as_deref()) {
+                self.cfg.mine.drv_printer = self.cfg.mine.printer.clone();
+                self.cfg.mine.drv_mode = to_hex(&dm);
+            }
+        }
+        if take { self.cfg.mine = PrintPrefs::from_settings(&self.st); }
         if save { self.st = self.cfg.clone(); self.st.save(); self.show_cfg = false; self.toast("Impostazioni salvate".into()); }
         if cancel || !open { self.show_cfg = false; }
     }
@@ -769,6 +831,7 @@ impl App {
                                 if !self.draft.drv_mode.is_empty() && ui.add(Button::new("Azzera").min_size(Vec2::new(70.0, 34.0))).on_hover_text("Torna alle impostazioni predefinite del driver").clicked() { drv_reset = true; }
                             });
                             if !self.draft.drv_mode.is_empty() { ui.label(RichText::new("Impostazioni del driver attive").weak()); }
+                            else { ui.label(RichText::new("Impostazioni predefinite del driver (es. fronte/retro)").weak()); }
                             ui.horizontal(|ui| {
                                 ui.label("Copie");
                                 if ui.add(Button::new(RichText::new("-").size(20.0)).min_size(Vec2::new(40.0, 34.0))).clicked() { self.draft.copies = self.draft.copies.saturating_sub(1).max(1); }

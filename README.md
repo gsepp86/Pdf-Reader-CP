@@ -3,10 +3,6 @@ Programma opensource progettato da Peppe CP con l'aiuto della IA.
 
 Lettore PDF a schede in Rust (egui + PDFium): una sola barra in alto con schede e comandi di stampa, documento a tutto schermo.
 
-## Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto il tempo che ti farò risparmiare per stampare grossi quantitativi di pdf ;-)
-
-[![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://paypal.me/PeppeCP)
-
 ## Creare l'installer per Windows
 **Metodo 1 - sul tuo PC (Windows 10/11 x64):** installa Rust (https://rustup.rs), poi doppio clic su `build.bat`.
 Scarica da solo pdfium.dll e Inno Setup e produce `dist\PDFReaderCP_Setup_2.2.exe`.
@@ -40,3 +36,17 @@ L'installer si scarica dagli "Artifacts" a fine lavoro.
 - **Intervallo personalizzato**: si possono ripetere le pagine, per esempio `1,1` (pagina 1 due volte, utile con 2 su 1), `2x3` (pagina 2 tre volte) o `1-3x2` (ogni pagina due volte).
 - **Schede**: la barra di scorrimento compare sotto le schede solo quando sono troppe.
 
+## Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto il tempo che ti farò risparmiare per stampare grossi quantitativi di pdf ;-)
+
+[![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://paypal.me/PeppeCP)
+
+https://github.com/gsepp86/Pdf-Reader-CP
+- **STAMPA TUTTO**: chiede sempre "STAMPARE CON LE IMPOSTAZIONI ATTUALI?" con il riepilogo (schede, pagine, fogli, copie, totale fogli, stampante, colore) e tre pulsanti: **STAMPA**, **CAMBIA** (apre le impostazioni di stampa: con **STAMPA TUTTO** stampa tutte le schede con le nuove impostazioni) e **ANNULLA**. Se sono impostate piu' copie compare anche **1 COPIA PER FILE**.
+- **Cambio pagina scorrendo**: con la rotella, il touchpad o lo strumento mano, arrivati in fondo alla pagina si continua sulla successiva (e in alto sulla precedente), senza cliccare i pulsanti.
+- **Schede tante**: quando non entrano nella barra compaiono piccoli numeri 1, 2, 3... sotto ogni scheda.
+- **Finestra di stampa**: la colonna delle impostazioni (compreso il cursore Scuro-Chiaro in "Colore e luminosita'") usa piu' altezza e ha una barra di scorrimento visibile se serve.
+- **Stampa in background**: durante l'invio di molti file compare in basso a destra un cerchio di caricamento con l'avanzamento (fogli e schede) e il pulsante Annulla; sparisce quando il lavoro e' in coda nella stampante.
+- **Schede spostabili**: trascina una scheda per cambiarne la posizione; STAMPA TUTTO stampa le schede nell'ordine in cui sono disposte.
+- **Contorno grigio scuro** attorno alla finestra.
+- **Impostazioni di stampa all'avvio** (Impostazioni > Stampa): si sceglie tra *ultime impostazioni utilizzate* e *le mie impostazioni predefinite* (stampante, copie, colore e funzioni del driver come il fronte/retro). All'avvio il programma ripristina sempre la stampa standard (1 pagina per foglio, tutte le pagine, scala adatta, 1 copia) e usa le impostazioni predefinite del driver della stampante, per esempio il fronte/retro se e' impostato come predefinito nel driver (si possono disattivare entrambe le opzioni).
+- Il contorno della finestra e' grigio scuro.
