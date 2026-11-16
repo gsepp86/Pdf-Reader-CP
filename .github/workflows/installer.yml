@@ -1,0 +1,90 @@
+name: Crea installer
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*", "[0-9]*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag della release a cui allegare l'installer (es. 2.2). Lascia vuoto per non allegare."
+        required: false
+        default: "2.2"
+
+permissions:
+  contents: write
+
+env:
+  PDFIUM_URL: https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-win-x64.tgz
+  APP_VER: "2.2"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Scarica pdfium.dll
+        shell: pwsh
+        run: |
+          if (Test-Path vendor\pdfium.dll) {
+            Write-Host "pdfium.dll gia' presente"
+            exit 0
+          }
+          Invoke-WebRequest -Uri $env:PDFIUM_URL -OutFile vendor\pdfium.tgz
+          tar -xzf vendor\pdfium.tgz -C vendor bin/pdfium.dll
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item -Force vendor\bin\pdfium.dll vendor\pdfium.dll
+          Remove-Item -Recurse -Force vendor\bin, vendor\pdfium.tgz
+
+      - name: Installa Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Compila programma e installer
+        shell: pwsh
+        run: |
+          cargo build --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Copy-Item -Force vendor\pdfium.dll target\release\
+
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Error "ISCC.exe (Inno Setup) non trovato"
+            exit 1
+          }
+
+          & $iscc installer\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          if (-not (Test-Path "dist\PDFReaderCP_Setup_$env:APP_VER.exe")) {
+            Write-Error "Installer non prodotto in dist\"
+            exit 1
+          }
+
+      - name: Carica l'installer come artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDFReaderCP_Setup_${{ env.APP_VER }}
+          path: dist/*.exe
+          if-no-files-found: error
+
+      - name: Allega l'installer alla release
+        if: env.RELEASE_TAG != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: dist/*.exe
+          fail_on_unmatched_files: true
