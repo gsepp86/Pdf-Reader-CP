@@ -50,3 +50,5 @@ https://github.com/gsepp86/Pdf-Reader-CP
 - **Contorno grigio scuro** attorno alla finestra.
 - **Impostazioni di stampa all'avvio** (Impostazioni > Stampa): si sceglie tra *ultime impostazioni utilizzate* e *le mie impostazioni predefinite* (stampante, copie, colore e funzioni del driver come il fronte/retro). All'avvio il programma ripristina sempre la stampa standard (1 pagina per foglio, tutte le pagine, scala adatta, 1 copia) e usa le impostazioni predefinite del driver della stampante, per esempio il fronte/retro se e' impostato come predefinito nel driver (si possono disattivare entrambe le opzioni).
 - Il contorno della finestra e' grigio scuro.
+- **PDF protetti da password**: all'apertura compare la richiesta della password (con messaggio se e' errata); piu' file protetti si aprono uno dopo l'altro.
+- **Finestre spostabili**: stampa, impostazioni, info e le altre finestre si trascinano dove vuoi (si aprono al centro la prima volta).

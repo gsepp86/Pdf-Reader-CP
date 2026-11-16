@@ -403,6 +403,11 @@ struct PrintTask {
     last: Option<(usize, usize, usize, Vec<u8>)>, total: usize, done: usize, cancel: bool,
 }
 
+/// Richiesta di password per un PDF protetto.
+struct PwdReq { path: PathBuf, text: String, wrong: bool, first: bool }
+/// Esito dell'apertura di un file.
+enum Load { Ok, NeedPwd, Fail(String) }
+
 struct App {
     pdfium: &'static Pdfium, docs: Vec<Doc>, tab: Tab,
     st: Settings, draft: Settings, printers: Vec<String>,
@@ -415,6 +420,7 @@ struct App {
     show_pall: bool, pa_mode: bool,
     over_acc: f32, over_at: Instant, edge: (bool, bool), scroll_reset: Option<bool>, tabs_overflow: bool,
     task: Option<PrintTask>, tab_drag: Option<usize>, next_id: u64,
+    pwd_req: Option<PwdReq>, pwd_queue: Vec<PathBuf>,
 }
 
 impl App {
@@ -442,7 +448,7 @@ impl App {
         detect_byte_order(pdfium);
         let start_pan = st.start_pan;
         let ipc = listener.map(|l| { let (tx, rx) = std::sync::mpsc::channel(); serve(l, tx, cc.egui_ctx.clone()); rx });
-        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: None, tab_drag: None, next_id: 1 };
+        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: None, tab_drag: None, next_id: 1, pwd_req: None, pwd_queue: vec![] };
         for a in init { app.open(a); }
         app
     }
@@ -506,21 +512,69 @@ impl App {
         if t.trim().is_empty() { None } else { Some(t) }
     }
 
-    fn open(&mut self, path: PathBuf) {
+    /// Apre un PDF (con la password, se serve). Se e' protetto da password e non e' stata data, restituisce Load::NeedPwd.
+    fn open_with(&mut self, path: PathBuf, pwd: Option<&str>) -> Load {
         // gia' aperto: passa a quella scheda invece di duplicarla
-        if let Some(i) = self.docs.iter().position(|d| d.path == path) { self.tab = Tab::Doc(i); self.scroll_tab = true; return; }
-        let pdf = self.pdfium.load_pdf_from_file(&path, None).ok();
-        let sizes: Option<Vec<(f32, f32)>> = pdf.as_ref().map(|d| d.pages().iter().map(|p| (p.width().value, p.height().value)).collect());
-        match (pdf, sizes) {
-            (Some(pdf), Some(s)) if !s.is_empty() => {
-                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                let id = self.next_id; self.next_id += 1;
-                self.docs.push(Doc { id, pdf, path, name, sizes: s, cur: 0, zoom: 1.0, fitpage: self.st.fit_page, tex: HashMap::new(), text: HashMap::new(), ptext: HashMap::new() });
-                self.tab = Tab::Doc(self.docs.len() - 1);
-                self.scroll_tab = true;
+        if let Some(i) = self.docs.iter().position(|d| d.path == path) { self.tab = Tab::Doc(i); self.scroll_tab = true; return Load::Ok; }
+        let pdf = match self.pdfium.load_pdf_from_file(&path, pwd) {
+            Ok(d) => d,
+            Err(PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::PasswordError)) => return Load::NeedPwd,
+            Err(e) => return Load::Fail(format!("{e:?}")),
+        };
+        let sizes: Vec<(f32, f32)> = pdf.pages().iter().map(|p| (p.width().value, p.height().value)).collect();
+        if sizes.is_empty() { return Load::Fail("il documento non contiene pagine".into()); }
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let id = self.next_id; self.next_id += 1;
+        self.docs.push(Doc { id, pdf, path, name, sizes, cur: 0, zoom: 1.0, fitpage: self.st.fit_page, tex: HashMap::new(), text: HashMap::new(), ptext: HashMap::new() });
+        self.tab = Tab::Doc(self.docs.len() - 1);
+        self.scroll_tab = true;
+        Load::Ok
+    }
+
+    fn open(&mut self, path: PathBuf) {
+        match self.open_with(path.clone(), None) {
+            Load::Ok => {}
+            Load::NeedPwd => { // chiede la password (se ce ne sono piu' di una, in coda)
+                if self.pwd_req.is_some() { self.pwd_queue.push(path); }
+                else { self.pwd_req = Some(PwdReq { path, text: String::new(), wrong: false, first: true }); }
             }
-            _ => err(&format!("Impossibile aprire il file:\n{}", path.display())),
+            Load::Fail(e) => err(&format!("Impossibile aprire il file:\n{}\n\nDettaglio: {e}", path.display())),
         }
+    }
+
+    fn next_pwd(&mut self) {
+        self.pwd_req = if self.pwd_queue.is_empty() { None } else { Some(PwdReq { path: self.pwd_queue.remove(0), text: String::new(), wrong: false, first: true }) };
+    }
+
+    /// Finestra "PDF protetto da password".
+    fn pwd_window(&mut self, ctx: &egui::Context) {
+        let Some(mut req) = self.pwd_req.take() else { return };
+        let (mut ok, mut cancel, mut open) = (false, false, true);
+        let name = req.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        egui::Window::new("PDF protetto da password").open(&mut open).collapsible(false).resizable(false)
+            .pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
+            ui.set_min_width(380.0);
+            ui.label(format!("Il file «{}» è protetto da password.", short(&name, 48)));
+            if req.wrong { ui.label(RichText::new("Password errata, riprova.").strong().color(ACCENT)); }
+            let r = ui.add(egui::TextEdit::singleline(&mut req.text).password(true).hint_text("Password").desired_width(320.0));
+            if req.first { r.request_focus(); req.first = false; }
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) { ok = true; }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.add(Button::new(RichText::new("Apri").strong().color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(100.0, 32.0))).clicked() { ok = true; }
+                if ui.add(Button::new("Annulla").min_size(Vec2::new(100.0, 32.0))).clicked() { cancel = true; }
+            });
+        });
+        if cancel || !open { self.next_pwd(); return; }
+        if ok {
+            let pwd = req.text.clone();
+            match self.open_with(req.path.clone(), Some(&pwd)) {
+                Load::Ok => { self.next_pwd(); return; }
+                Load::NeedPwd => { req.wrong = true; req.text.clear(); req.first = true; }
+                Load::Fail(e) => { err(&format!("Impossibile aprire il file:\n{}\n\nDettaglio: {e}", req.path.display())); self.next_pwd(); return; }
+            }
+        }
+        self.pwd_req = Some(req);
     }
 
     fn pick(&mut self) {
@@ -636,7 +690,7 @@ impl App {
         let warn = c > 1 && self.st.ask_copies;
         let colore = match self.st.color { ColorMode::Color => "COLORI", ColorMode::Gray => "SCALA DI GRIGI", ColorMode::Bw => "BIANCO E NERO" };
         let stampante = self.st.printer.to_uppercase();
-        egui::Window::new("STAMPA TUTTO").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        egui::Window::new("STAMPA TUTTO").open(&mut open).collapsible(false).resizable(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
             ui.set_min_width(440.0);
             ui.label(RichText::new("STAMPARE CON LE IMPOSTAZIONI ATTUALI?").strong().size(18.0));
             ui.add_space(6.0);
@@ -679,7 +733,7 @@ impl App {
     fn settings_window(&mut self, ctx: &egui::Context) {
         let (mut open, mut save, mut cancel, mut reset) = (true, false, false, false);
         let (mut cfg_drv, mut take) = (false, false);
-        egui::Window::new("Impostazioni").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        egui::Window::new("Impostazioni").open(&mut open).collapsible(false).resizable(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
             ui.set_min_width(470.0);
             ui.horizontal(|ui| {
                 for (i, n) in ["Generale", "Stampa"].into_iter().enumerate() {
@@ -801,7 +855,7 @@ impl App {
             });
         }
         let maxh = (ctx.screen_rect().height() - 140.0).max(320.0);
-        egui::Window::new("Stampa").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        egui::Window::new("Stampa").open(&mut open).collapsible(false).resizable(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
             { // pulsanti e testi piu' grandi
                 let s = ui.style_mut();
                 s.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(15.5));
@@ -1399,13 +1453,14 @@ impl eframe::App for App {
         }
         if cancel_print { if let Some(t) = self.task.as_mut() { t.cancel = true; } }
         if self.task.is_some() { self.print_step(ctx); }
+        if self.pwd_req.is_some() { self.pwd_window(ctx); }
         if self.show_pall { self.pall_window(ctx); }
         if self.show_cfg { self.settings_window(ctx); }
         if !self.show_print { self.pa_mode = false; }
         if self.show_print { if let Tab::Doc(i) = self.tab { self.print_dialog(ctx, i); } else { self.show_print = false; } }
         if self.show_info {
             let mut open = true;
-            egui::Window::new("Informazioni").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            egui::Window::new("Informazioni").open(&mut open).collapsible(false).resizable(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.image(egui::load::SizedTexture::new(self.logo.id(), Vec2::splat(72.0)));
                     ui.heading("PDF Reader CP");
