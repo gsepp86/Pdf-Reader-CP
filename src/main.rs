@@ -513,7 +513,7 @@ impl App {
     }
 
     /// Apre un PDF (con la password, se serve). Se e' protetto da password e non e' stata data, restituisce Load::NeedPwd.
-    fn open_with(&mut self, path: PathBuf, pwd: Option<&str>) -> Load {
+    fn open_with(&mut self, path: PathBuf, pwd: Option<&'static str>) -> Load { // pdfium-render lega la vita del documento a quella della password
         // gia' aperto: passa a quella scheda invece di duplicarla
         if let Some(i) = self.docs.iter().position(|d| d.path == path) { self.tab = Tab::Doc(i); self.scroll_tab = true; return Load::Ok; }
         let pdf = match self.pdfium.load_pdf_from_file(&path, pwd) {
@@ -567,8 +567,10 @@ impl App {
         });
         if cancel || !open { self.next_pwd(); return; }
         if ok {
-            let pwd = req.text.clone();
-            match self.open_with(req.path.clone(), Some(&pwd)) {
+            // la password serve solo durante la lettura del file, ma pdfium-render la lega al documento:
+            // la rendo 'static (pochi byte, una volta per apertura)
+            let pwd: &'static str = Box::leak(req.text.clone().into_boxed_str());
+            match self.open_with(req.path.clone(), Some(pwd)) {
                 Load::Ok => { self.next_pwd(); return; }
                 Load::NeedPwd => { req.wrong = true; req.text.clear(); req.first = true; }
                 Load::Fail(e) => { err(&format!("Impossibile aprire il file:\n{}\n\nDettaglio: {e}", req.path.display())); self.next_pwd(); return; }
@@ -1220,7 +1222,7 @@ impl eframe::App for App {
                                             let ins = rects.iter().filter(|r| r.center().x < pp.x).count();
                                             let x = if ins < rects.len() { rects[ins].left() - 1.0 } else { rects[rects.len() - 1].right() + 1.0 };
                                             let top = rects[0].top();
-                                            ui.painter().line_segment([egui::pos2(x, top), egui::pos2(x, top + 26.0)], egui::Stroke::new(2.5, ACCENT));
+                                            ui.painter().line_segment([egui::pos2(x, top), egui::pos2(x, top + 26.0)], egui::Stroke::new(2.5_f32, ACCENT));
                                             if !ctx.input(|i| i.pointer.primary_down()) {
                                                 let to = if ins > from { ins - 1 } else { ins };
                                                 if to != from { reorder = Some((from, to)); }
@@ -1485,7 +1487,7 @@ impl eframe::App for App {
         }
         // contorno nero attorno alla finestra (la finestra non ha la cornice di Windows)
         ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("window_outline")))
-            .rect_stroke(ctx.screen_rect().shrink(0.75), 0.0, egui::Stroke::new(1.5, Color32::from_gray(75)));
+            .rect_stroke(ctx.screen_rect().shrink(0.75), 0.0, egui::Stroke::new(1.5_f32, Color32::from_gray(75)));
         if self.st != before { self.st.save(); } // stampante / "N su 1" scelti nella barra restano per "Stampa subito"
     }
 }
