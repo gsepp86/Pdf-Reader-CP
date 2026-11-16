@@ -1,4 +1,4 @@
-// PDF Reader CP 2.2 - Programma opensource progettato da Peppe CP con l'aiuto della IA.
+// PDF Reader CP 2.6 - Programma opensource progettato da Peppe CP con l'aiuto della IA.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use eframe::egui::{self, Button, Color32, RichText, Vec2};
 use pdfium_render::prelude::*;
@@ -13,6 +13,7 @@ const A4: (f32, f32) = (595.0, 842.0); // punti (1/72")
 const ICON: &[u8] = include_bytes!("../assets/icon.png");
 const DONATE_URL: &str = "https://paypal.me/PeppeCP";
 const GITHUB_URL: &str = "https://github.com/gsepp86/Pdf-Reader-CP";
+const VERSION: &str = "2.6";
 const NUPS: [u32; 6] = [1, 2, 4, 6, 9, 16]; // pagine per foglio
 
 // ---------- impostazioni di stampa (salvate: servono a "Stampa subito") ----------
@@ -44,10 +45,10 @@ impl PrintPrefs {
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
-struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, border: bool, color: ColorMode, bright: i32, drv_printer: String, drv_mode: String, background: bool, start_max: bool, start_pan: bool, fit_page: bool, ask_copies: bool, start_mode: StartMode, reset_std: bool, use_driver_defaults: bool, mine: PrintPrefs }
+struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, poster: u32, poster_overlap: u32, border: bool, color: ColorMode, bright: i32, drv_printer: String, drv_mode: String, background: bool, start_max: bool, start_pan: bool, fit_page: bool, ask_copies: bool, start_mode: StartMode, reset_std: bool, use_driver_defaults: bool, mine: PrintPrefs }
 impl Default for Settings {
     fn default() -> Self {
-        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, border: true, color: ColorMode::Color, bright: 0, drv_printer: String::new(), drv_mode: String::new(), background: false, start_max: true, start_pan: false, fit_page: false, ask_copies: true, start_mode: StartMode::Last, reset_std: true, use_driver_defaults: true, mine: PrintPrefs::default() }
+        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, poster: 0, poster_overlap: 0, border: true, color: ColorMode::Color, bright: 0, drv_printer: String::new(), drv_mode: String::new(), background: false, start_max: true, start_pan: false, fit_page: false, ask_copies: true, start_mode: StartMode::Last, reset_std: true, use_driver_defaults: true, mine: PrintPrefs::default() }
     }
 }
 impl Settings {
@@ -67,7 +68,7 @@ impl Settings {
             if self.use_driver_defaults { self.drv_printer.clear(); self.drv_mode.clear(); } // si usano le impostazioni predefinite del driver
         }
         if self.reset_std {
-            self.nup = 1; self.sel = PageSel::All; self.custom = "1-".into();
+            self.nup = 1; self.poster = 0; self.sel = PageSel::All; self.custom = "1-".into();
             self.scale = ScaleMode::Fit; self.pct = 100; self.collate = true;
         }
     }
@@ -105,6 +106,23 @@ fn pages_for(st: &Settings, cur: usize, n: usize) -> Vec<usize> {
             }
             v
         }
+    }
+}
+
+/// Un foglio da stampare: le pagine che ci vanno sopra e, in modalita' poster, il riquadro della pagina.
+#[derive(Clone)]
+struct Sheet { pages: Vec<usize>, tile: Option<(u32, u32)> }
+
+/// Divide le pagine in fogli (N su 1) oppure nei riquadri di un poster (una pagina su piu' fogli).
+fn sheets_for(st: &Settings, pages: &[usize]) -> Vec<Sheet> {
+    let g = st.poster;
+    if g >= 2 {
+        let mut v = Vec::with_capacity(pages.len() * (g * g) as usize);
+        for &p in pages { for r in 0..g { for c in 0..g { v.push(Sheet { pages: vec![p], tile: Some((r, c)) }); } } }
+        v
+    } else {
+        let nup = st.nup.max(1) as usize;
+        pages.chunks(nup).map(|c| Sheet { pages: c.to_vec(), tile: None }).collect()
     }
 }
 
@@ -176,8 +194,8 @@ fn outline(dst: &mut [u8], dw: usize, dh: usize, x: i32, y: i32, w: usize, h: us
 
 /// Compone UN foglio (1, 2, 4, 6, 9 o 16 pagine) su carta `pap` (punti). Usata sia per l'anteprima sia per la stampa.
 /// `ppp` = pixel per punto. Restituisce RGBA gia' ruotato come la carta fisica.
-fn compose(_pdfium: &Pdfium, d: &Doc, pages: &[usize], pap: (f32, f32), st: &Settings, ppp: f32, apply_tone: bool) -> Option<(usize, usize, Vec<u8>)> {
-    let n = st.nup.max(1) as usize;
+fn compose(_pdfium: &Pdfium, d: &Doc, pages: &[usize], pap: (f32, f32), st: &Settings, ppp: f32, apply_tone: bool, tile: Option<(u32, u32)>) -> Option<(usize, usize, Vec<u8>)> {
+    let n = if st.poster >= 2 { 1 } else { st.nup.max(1) as usize };
     let (pw0, ph0) = d.sizes[*pages.first()?];
     let land = pw0 > ph0;
     let pg = match n { 2 => (1, 2), 4 => (2, 2), 6 => (2, 3), 9 => (3, 3), 16 => (4, 4), _ => (1, 1) }; // colonne x righe su foglio verticale
@@ -187,6 +205,8 @@ fn compose(_pdfium: &Pdfium, d: &Doc, pages: &[usize], pap: (f32, f32), st: &Set
     let (mx, mn) = (pap.0.max(pap.1), pap.0.min(pap.1));
     let (sw, sh) = if sheet_land { (mx, mn) } else { (mn, mx) };
     let rot = sheet_land != (pap.0 > pap.1);
+    // poster: questo foglio e' solo un riquadro ingrandito della pagina
+    if let Some(t) = tile { return compose_poster(d, *pages.first()?, (sw, sh), rot, st, ppp, apply_tone, t); }
     let (bw, bh) = (((sw * ppp) as usize).max(1), ((sh * ppp) as usize).max(1));
     let mut buf = vec![255u8; bw * bh * 4];
     let (cw, ch) = (sw / cols as f32, sh / rows as f32);
@@ -207,6 +227,56 @@ fn compose(_pdfium: &Pdfium, d: &Doc, pages: &[usize], pap: (f32, f32), st: &Set
                 outline(&mut buf, bw, bh, xi + t, yi + t, (iw as i32 - 2 * t).max(1) as usize, (ih as i32 - 2 * t).max(1) as usize);
             }
         }
+    }
+    if apply_tone { tone(&mut buf, st); }
+    Some(if rot { rot90(bw, bh, &buf) } else { (bw, bh, buf) })
+}
+
+/// Copia un rettangolo dell'immagine `src` dentro `dst` (stessi pixel, nessuna scala).
+fn blit_rect(dst: &mut [u8], dw: usize, dh: usize, src: &[u8], sw: usize, sh: usize, sx: i32, sy: i32, w: i32, h: i32, dx: i32, dy: i32) {
+    if w <= 0 || h <= 0 { return; }
+    for r in 0..h {
+        let (ty, srow) = (dy + r, sy + r);
+        if ty < 0 || ty >= dh as i32 || srow < 0 || srow >= sh as i32 { continue; }
+        let x0 = dx.max(0);
+        let x1 = (dx + w).min(dw as i32);
+        if x1 <= x0 { continue; }
+        let sx0 = sx + (x0 - dx);
+        let len = (x1 - x0) as usize;
+        if sx0 < 0 || sx0 as usize + len > sw { continue; }
+        let d = (ty as usize * dw + x0 as usize) * 4;
+        let s = (srow as usize * sw + sx0 as usize) * 4;
+        dst[d..d + len * 4].copy_from_slice(&src[s..s + len * 4]);
+    }
+}
+
+/// Un riquadro del poster: la pagina ingrandita e divisa su piu' fogli, con sovrapposizione per incollarla.
+fn compose_poster(d: &Doc, page: usize, sheet: (f32, f32), rot: bool, st: &Settings, ppp: f32, apply_tone: bool, tile: (u32, u32)) -> Option<(usize, usize, Vec<u8>)> {
+    let g = st.poster.max(2) as usize;
+    let (sw, sh) = sheet;
+    let ov = (st.poster_overlap as f32 / 25.4 * 72.0).clamp(0.0, sw.min(sh) / 4.0);
+    let (tw, th) = (sw - ov, sh - ov); // parte di poster coperta da un foglio
+    let (total_w, total_h) = (tw * g as f32 + ov, th * g as f32 + ov);
+    let (pw, ph) = d.sizes[page];
+    let s = (total_w / pw).min(total_h / ph) as f32; // il poster sta dentro il blocco di fogli
+    let (poster_w, poster_h) = (pw * s, ph * s);
+    let (ox, oy) = ((total_w - poster_w) / 2.0, (total_h - poster_h) / 2.0);
+    let (x0, y0) = (tile.1 as f32 * tw, tile.0 as f32 * th); // riquadro di questo foglio nel blocco
+    // risoluzione: 300 dpi, ridotta solo se l'intera pagina in memoria sarebbe troppo grande
+    let lim = (24_000_000.0f32 / (poster_w * poster_h * ppp * ppp)).sqrt().min(1.0);
+    let pp = (ppp * lim).max(0.4);
+    let (bw, bh) = (((sw * pp) as usize).max(1), ((sh * pp) as usize).max(1));
+    let mut buf = vec![255u8; bw * bh * 4];
+    // parte di pagina visibile in questo riquadro (punti PDF, origine in alto a sinistra)
+    let (px0, py0) = (((x0 - ox) / s).max(0.0), ((y0 - oy) / s).max(0.0));
+    let (px1, py1) = (((x0 + sw - ox) / s).min(pw), ((y0 + sh - oy) / s).min(ph));
+    if px1 > px0 && py1 > py0 {
+        let (iw, ih, data) = render(&d.pdf, page, ((poster_w * pp) as i32).max(8))?;
+        let k = iw as f32 / pw; // pixel per punto dell'immagine resa
+        let (sx, sy) = ((px0 * k) as i32, (py0 * k) as i32);
+        let (cw, ch) = (((px1 - px0) * k) as i32, ((py1 - py0) * k) as i32);
+        let (dx, dy) = (((px0 * s + ox - x0) * pp) as i32, ((py0 * s + oy - y0) * pp) as i32);
+        blit_rect(&mut buf, bw, bh, &data, iw, ih, sx, sy, cw, ch, dx, dy);
     }
     if apply_tone { tone(&mut buf, st); }
     Some(if rot { rot90(bw, bh, &buf) } else { (bw, bh, buf) })
@@ -272,6 +342,33 @@ fn confirm(title: &str, text: &str) -> bool {
 
 fn err(msg: &str) {
     rfd::MessageDialog::new().set_title("PDF Reader CP").set_description(msg).set_level(rfd::MessageLevel::Error).show();
+}
+
+// ---------- controllo aggiornamenti ----------
+/// Esito del controllo aggiornamenti fatto dal pulsante nella finestra Info.
+#[derive(Clone, PartialEq)]
+enum Upd { None, Wait, Ver(String), Err(String) }
+
+fn version_tuple(v: &str) -> (u32, u32, u32) {
+    let mut it = v.trim().trim_start_matches('v').split('.').map(|x| x.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().unwrap_or(0));
+    (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
+}
+
+/// Ultima versione pubblicata su GitHub (usa curl.exe, presente in Windows 10/11; nessuna finestra).
+fn latest_version() -> Result<String, String> {
+    const API: &str = "https://api.github.com/repos/gsepp86/Pdf-Reader-CP/releases/latest";
+    let mut c = std::process::Command::new("curl");
+    c.args(["-sSL", "--max-time", "20", "-H", "User-Agent: PDFReaderCP", "-H", "Accept: application/vnd.github+json", API]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: nessun lampo di console
+    }
+    let out = c.output().map_err(|_| "Controllo non riuscito: curl non disponibile".to_string())?;
+    if !out.status.success() { return Err("Controllo non riuscito (sei collegato a internet?)".into()); }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| "Risposta non valida".to_string())?;
+    let tag = v.get("tag_name").and_then(|t| t.as_str()).ok_or("Nessuna versione pubblicata")?;
+    Ok(tag.trim().trim_start_matches('v').to_string())
 }
 
 // ---------- spooler Windows (GDI) ----------
@@ -390,7 +487,7 @@ struct Doc { id: u64, pdf: PdfDocument<'static>, path: PathBuf, name: String, si
 #[derive(PartialEq, Clone, Copy)]
 enum Tab { Home, Doc(usize) }
 type PvKey = (u64, ColorMode, i32); // versione del foglio + colore + chiaro/scuro
-type RawKey = (usize, usize, PageSel, String, u32, bool, ScaleMode, u32, bool, bool, (i32, i32));
+type RawKey = (usize, usize, PageSel, String, u32, bool, ScaleMode, u32, bool, bool, (i32, i32), (u32, u32)); // poster: griglia + sovrapposizione
 /// Carattere del testo di una pagina: unicode + riquadro [sinistra, basso, destra, alto] in punti PDF.
 struct TCh { c: char, r: [f32; 4] }
 /// Selezione di testo: documento, pagina, indice del primo e dell'ultimo carattere.
@@ -399,7 +496,7 @@ struct Sel { doc: usize, page: usize, a: usize, b: usize }
 /// Lavoro di stampa in corso: procede un passo (un foglio) per volta cosi' l'interfaccia resta viva e mostra il cerchio di caricamento.
 struct PrintTask {
     ids: Vec<u64>, st: Settings, di: usize, job: Option<spool::Job>,
-    sheets: Vec<Vec<usize>>, order: Vec<usize>, pos: usize, area: (f32, f32, f32),
+    sheets: Vec<Sheet>, order: Vec<usize>, pos: usize, area: (f32, f32, f32),
     last: Option<(usize, usize, usize, Vec<u8>)>, total: usize, done: usize, cancel: bool,
 }
 
@@ -421,6 +518,7 @@ struct App {
     over_acc: f32, over_at: Instant, edge: (bool, bool), scroll_reset: Option<bool>, tabs_overflow: bool,
     task: Option<PrintTask>, tab_drag: Option<usize>, next_id: u64,
     pwd_req: Option<PwdReq>, pwd_queue: Vec<PathBuf>,
+    upd: Upd, upd_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
 }
 
 impl App {
@@ -448,7 +546,7 @@ impl App {
         detect_byte_order(pdfium);
         let start_pan = st.start_pan;
         let ipc = listener.map(|l| { let (tx, rx) = std::sync::mpsc::channel(); serve(l, tx, cc.egui_ctx.clone()); rx });
-        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: None, tab_drag: None, next_id: 1, pwd_req: None, pwd_queue: vec![] };
+        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: None, tab_drag: None, next_id: 1, pwd_req: None, pwd_queue: vec![], upd: Upd::None, upd_rx: None };
         for a in init { app.open(a); }
         app
     }
@@ -611,10 +709,9 @@ impl App {
         if all_pages { st.sel = PageSel::All; }
         let ids: Vec<u64> = idx.iter().filter_map(|&i| self.docs.get(i).map(|d| d.id)).collect();
         if ids.is_empty() { return; }
-        let nup = st.nup.max(1) as usize;
         let c = st.copies.max(1) as usize;
         let total: usize = ids.iter().filter_map(|id| self.docs.iter().find(|d| d.id == *id))
-            .map(|d| ((pages_for(&st, d.cur, d.sizes.len()).len() + nup - 1) / nup) * c).sum();
+            .map(|d| sheets_for(&st, &pages_for(&st, d.cur, d.sizes.len())).len() * c).sum();
         self.task = Some(PrintTask { ids, st, di: 0, job: None, sheets: vec![], order: vec![], pos: 0, area: (595.0, 842.0, 72.0), last: None, total, done: 0, cancel: false });
     }
 
@@ -640,8 +737,7 @@ impl App {
             let Some(d) = self.docs.iter().find(|d| d.id == t.ids[t.di]) else { t.di += 1; return Ok(true); }; // scheda chiusa nel frattempo
             let pages = pages_for(&t.st, d.cur, d.sizes.len());
             if pages.is_empty() { return Err(format!("Nessuna pagina da stampare in {}", d.name)); }
-            let nup = t.st.nup.max(1) as usize;
-            t.sheets = pages.chunks(nup).map(|c| c.to_vec()).collect();
+            t.sheets = sheets_for(&t.st, &pages);
             let (c, ns) = (t.st.copies.max(1) as usize, t.sheets.len());
             t.order = if t.st.collate { (0..c).flat_map(|_| 0..ns).collect() } else { (0..ns).flat_map(|s| std::iter::repeat(s).take(c)).collect() };
             let dm: Option<Vec<u8>> = if t.st.drv_printer == t.st.printer && !t.st.drv_mode.is_empty() { Some(from_hex(&t.st.drv_mode)) } else { None };
@@ -657,7 +753,7 @@ impl App {
             let s = t.order[t.pos];
             if t.last.as_ref().map(|l| l.0) != Some(s) {
                 let (aw, ah, _) = t.area;
-                let (w, h, mut b) = compose(&self.pdfium, d, &t.sheets[s], (aw, ah), &t.st, 300.0 / 72.0, true).ok_or("Rendering della pagina non riuscito")?;
+                let (w, h, mut b) = compose(&self.pdfium, d, &t.sheets[s].pages, (aw, ah), &t.st, 300.0 / 72.0, true, t.sheets[s].tile).ok_or("Rendering della pagina non riuscito")?;
                 for q in b.chunks_exact_mut(4) { q.swap(0, 2); } // RGBA -> BGRA per GDI
                 t.last = Some((s, w, h, b));
             }
@@ -687,7 +783,7 @@ impl App {
         let c = self.st.copies.max(1);
         let nup = self.st.nup.max(1) as usize;
         let pagine: usize = self.docs.iter().map(|d| d.sizes.len()).sum();
-        let fogli: usize = self.docs.iter().map(|d| (d.sizes.len() + nup - 1) / nup).sum(); // fogli per copia
+        let fogli: usize = self.docs.iter().map(|d| sheets_for(&self.st, &(0..d.sizes.len()).collect::<Vec<_>>()).len()).sum(); // fogli per copia
         let tot = fogli * c as usize;
         let warn = c > 1 && self.st.ask_copies;
         let colore = match self.st.color { ColorMode::Color => "COLORI", ColorMode::Gray => "SCALA DI GRIGI", ColorMode::Bw => "BIANCO E NERO" };
@@ -699,7 +795,8 @@ impl App {
             if warn { ui.label(RichText::new(format!("ATTENZIONE: SONO IMPOSTATE {c} COPIE PER OGNI FILE.")).strong().color(ACCENT)); ui.add_space(4.0); }
             ui.label(format!("SCHEDE APERTE: {n}"));
             ui.label(format!("PAGINE PER COPIA: {pagine}"));
-            ui.label(format!("FOGLI PER COPIA: {fogli} ({nup} PAGINE PER FOGLIO)"));
+            if self.st.poster >= 2 { ui.label(format!("FOGLI PER COPIA: {fogli} (POSTER {} × {} RIQUADRI)", self.st.poster, self.st.poster)); }
+            else { ui.label(format!("FOGLI PER COPIA: {fogli} ({nup} PAGINE PER FOGLIO)")); }
             ui.label(format!("COPIE PER OGNI FILE: {c}"));
             ui.label(RichText::new(format!("TOTALE FOGLI: {tot}")).strong());
             ui.label(format!("STAMPANTE: {stampante}"));
@@ -722,6 +819,16 @@ impl App {
             self.show_print = true; self.draft = self.st.clone(); self.prev = 0; self.pv = None; self.pv_raw = None; self.pa_mode = true;
         }
         else if cancel || !open { self.show_pall = false; }
+    }
+
+    /// Avvia in un thread il controllo della versione piu' recente: l'interfaccia non si blocca.
+    fn check_updates(&mut self, ctx: &egui::Context) {
+        if self.upd_rx.is_some() { return; }
+        self.upd = Upd::Wait;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || { let r = latest_version(); let _ = tx.send(r); ctx.request_repaint(); });
+        self.upd_rx = Some(rx);
     }
 
     /// Stampa subito la scheda indicata; con piu' di una copia chiede conferma.
@@ -837,15 +944,16 @@ impl App {
         }
         let nup = self.draft.nup.max(1) as usize;
         let pages = pages_for(&self.draft, self.docs[di].cur, n);
-        let sheets = (pages.len() + nup - 1) / nup;
+        let list = sheets_for(&self.draft, &pages);
+        let sheets = list.len();
         let prev = self.prev.min(sheets.saturating_sub(1));
         // anteprima: il foglio si ricompone solo se cambiano pagine/scala/carta; colore e chiaro/scuro si applicano al volo
         let d0 = &self.draft;
-        let rk: RawKey = (di, prev, d0.sel, d0.custom.clone(), d0.nup, d0.border, d0.scale, d0.pct, d0.rotate, d0.center, (self.paper.0 as i32, self.paper.1 as i32));
+        let rk: RawKey = (di, prev, d0.sel, d0.custom.clone(), d0.nup, d0.border, d0.scale, d0.pct, d0.rotate, d0.center, (self.paper.0 as i32, self.paper.1 as i32), (d0.poster, d0.poster_overlap));
         if self.pv_raw.as_ref().map(|r| &r.0) != Some(&rk) {
             self.pv_gen += 1;
-            self.pv_raw = pages.chunks(nup).nth(prev)
-                .and_then(|chunk| compose(&self.pdfium, &self.docs[di], chunk, self.paper, &self.draft, 1.5, false))
+            self.pv_raw = list.get(prev)
+                .and_then(|sh| compose(&self.pdfium, &self.docs[di], &sh.pages, self.paper, &self.draft, 1.5, false, sh.tile))
                 .map(|(w, h, b)| (rk, w, h, b));
         }
         let tk: PvKey = (self.pv_gen, self.draft.color, self.draft.bright);
@@ -929,6 +1037,25 @@ impl App {
                             ui.checkbox(&mut self.draft.center, "Centra automaticamente");
                         });
                         ui.group(|ui| {
+                            ui.label(RichText::new("Poster (una pagina su più fogli)").strong().color(ACCENT));
+                            ui.horizontal(|ui| {
+                                ui.label("Ingrandisci su");
+                                egui::ComboBox::from_id_salt("po").width(190.0)
+                                    .selected_text(if self.draft.poster < 2 { "Disattivato".to_string() } else { format!("{} × {} ({} fogli)", self.draft.poster, self.draft.poster, self.draft.poster * self.draft.poster) })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut self.draft.poster, 0, "Disattivato");
+                                        for g in [2u32, 3, 4] { ui.selectable_value(&mut self.draft.poster, g, format!("{g} × {g} ({} fogli)", g * g)); }
+                                    });
+                            });
+                            if self.draft.poster >= 2 {
+                                ui.horizontal(|ui| {
+                                    ui.label("Sovrapposizione");
+                                    ui.add(egui::DragValue::new(&mut self.draft.poster_overlap).range(0..=30).suffix(" mm"));
+                                });
+                                ui.label(RichText::new("Ogni pagina viene stampata su più fogli da ritagliare e incollare; la sovrapposizione lascia un margine per far combaciare i bordi. Con il poster «pagine per foglio» e la scala non vengono usate.").weak().small());
+                            }
+                        });
+                        ui.group(|ui| {
                             ui.label(RichText::new("Colore e luminosità").strong().color(ACCENT));
                             ui.horizontal(|ui| {
                                 ui.radio_value(&mut self.draft.color, ColorMode::Color, "Colori");
@@ -959,7 +1086,12 @@ impl App {
                     ui.horizontal_wrapped(|ui| {
                         for p in 0..sheets.min(40) { if ui.selectable_label(prev == p, (p + 1).to_string()).clicked() { self.prev = p; } }
                     });
-                    ui.label(format!("Foglio {} di {} · {} pag. per foglio", prev + 1, sheets.max(1), nup));
+                    if self.draft.poster >= 2 {
+                        let (r, c) = list.get(prev).and_then(|s| s.tile).unwrap_or((0, 0));
+                        ui.label(format!("Foglio {} di {} · poster {}×{} · riquadro {}, {}", prev + 1, sheets.max(1), self.draft.poster, self.draft.poster, r + 1, c + 1));
+                    } else {
+                        ui.label(format!("Foglio {} di {} · {} pag. per foglio", prev + 1, sheets.max(1), nup));
+                    }
                 });
             });
             ui.separator();
@@ -1455,19 +1587,27 @@ impl eframe::App for App {
         }
         if cancel_print { if let Some(t) = self.task.as_mut() { t.cancel = true; } }
         if self.task.is_some() { self.print_step(ctx); }
+        if let Some(rx) = &self.upd_rx {
+            match rx.try_recv() {
+                Ok(Ok(v)) => { self.upd = Upd::Ver(v); self.upd_rx = None; }
+                Ok(Err(e)) => { self.upd = Upd::Err(e); self.upd_rx = None; }
+                Err(std::sync::mpsc::TryRecvError::Empty) => { ctx.request_repaint_after(Duration::from_millis(250)); }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.upd = Upd::Err("Controllo non riuscito".into()); self.upd_rx = None; }
+            }
+        }
         if self.pwd_req.is_some() { self.pwd_window(ctx); }
         if self.show_pall { self.pall_window(ctx); }
         if self.show_cfg { self.settings_window(ctx); }
         if !self.show_print { self.pa_mode = false; }
         if self.show_print { if let Tab::Doc(i) = self.tab { self.print_dialog(ctx, i); } else { self.show_print = false; } }
         if self.show_info {
-            let mut open = true;
+            let (mut open, mut check) = (true, false);
             egui::Window::new("Informazioni").open(&mut open).collapsible(false).resizable(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.image(egui::load::SizedTexture::new(self.logo.id(), Vec2::splat(72.0)));
                     ui.heading("PDF Reader CP");
                     ui.label("Programma opensource progettato da Peppe CP con l'aiuto della IA.");
-                    ui.label(RichText::new("Versione 2.2").weak());
+                    ui.label(RichText::new(format!("Versione {VERSION}")).weak());
                     ui.add_space(8.0);
                     ui.separator();
                     ui.scope(|ui| {
@@ -1481,8 +1621,27 @@ impl eframe::App for App {
                     }
                     ui.add_space(4.0);
                     ui.hyperlink_to("github.com/gsepp86/Pdf-Reader-CP", GITHUB_URL);
+                    ui.add_space(8.0);
+                    match &self.upd {
+                        Upd::None => {}
+                        Upd::Wait => { ui.label(RichText::new("Controllo aggiornamenti…").weak()); }
+                        Upd::Err(e) => { ui.label(RichText::new(e.clone()).color(ACCENT)); }
+                        Upd::Ver(v) => {
+                            if version_tuple(v) > version_tuple(VERSION) {
+                                ui.label(RichText::new(format!("È disponibile la versione {v}")).strong().color(ACCENT));
+                                if ui.add(Button::new(RichText::new("Apri la pagina per scaricarla").strong().color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(240.0, 34.0))).clicked() {
+                                    ctx.output_mut(|o| o.open_url = Some(egui::OpenUrl::new_tab(&format!("{GITHUB_URL}/releases/latest"))));
+                                }
+                            } else {
+                                ui.label(RichText::new("Hai già l'ultima versione.").weak());
+                            }
+                        }
+                    }
+                    ui.add_space(6.0);
+                    if ui.add(Button::new("Cerca aggiornamenti").min_size(Vec2::new(220.0, 34.0))).clicked() { check = true; }
                 });
             });
+            if check { self.check_updates(ctx); }
             if !open { self.show_info = false; }
         }
         // contorno nero attorno alla finestra (la finestra non ha la cornice di Windows)

@@ -1,5 +1,13 @@
 # Novità
 
+## PDF Reader CP 2.6
+Programma opensource progettato da Peppe CP con l'aiuto della IA.
+
+### Novità
+- **Stampa poster**: una pagina ingrandita e divisa su 2 × 2, 3 × 3 o 4 × 4 fogli, con sovrapposizione regolabile (0-30 mm) per ritagliare e incollare i bordi; anteprima e conteggio dei fogli aggiornati.
+- **Cerca aggiornamenti** nella finestra Info: mostra l'ultima versione pubblicata e, se più recente, apre la pagina di download.
+- Versione del programma portata alla 2.6.
+
 ## PDF Reader CP 2.2
 Programma opensource progettato da Peppe CP con l'aiuto della IA.
 

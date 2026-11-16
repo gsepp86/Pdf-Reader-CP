@@ -1,4 +1,4 @@
-# PDF Reader CP 2.2
+# PDF Reader CP 2.6
 Programma opensource progettato da Peppe CP con l'aiuto della IA.
 
 ## Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto il tempo che ti farò risparmiare per stampare grossi quantitativi di pdf ;-)
@@ -9,10 +9,10 @@ Lettore PDF a schede in Rust (egui + PDFium): una sola barra in alto con schede 
 
 ## Creare l'installer per Windows
 **Metodo 1 - sul tuo PC (Windows 10/11 x64):** installa Rust (https://rustup.rs), poi doppio clic su `build.bat`.
-Scarica da solo pdfium.dll e Inno Setup e produce `dist\PDFReaderCP_Setup_2.2.exe`.
+Scarica da solo pdfium.dll e Inno Setup e produce `dist\PDFReaderCP_Setup_2.6.exe`.
 
 **Metodo 2 - senza installare nulla:** carica la cartella su GitHub, poi Actions > "Crea installer" > Run workflow.
-L'installer si scarica dagli "Artifacts" a fine lavoro; se nel campo `release_tag` scrivi il nome di un tag (per esempio `2.2`)
+L'installer si scarica dagli "Artifacts" a fine lavoro; se nel campo `release_tag` scrivi il nome di un tag (per esempio `2.6`)
 viene anche allegato alla release di quel tag. Il workflow parte da solo a ogni push su `main` e su un tag `v*` o numerico.
 
 ## Uso
@@ -28,6 +28,8 @@ viene anche allegato alla release di quel tag. Il workflow parte da solo a ogni 
 - Stampa...: scala **Adatta alla pagina**, **Dimensioni reali (100%)** oppure **Proporzione personalizzata** (25-200 %); con piu' pagine per foglio la scala e' automatica.
 - **Testo selezionabile**: trascina il mouse sul testo della pagina, poi Ctrl+C (o tasto destro > Copia). Ctrl+A seleziona tutto il testo della pagina. I PDF scansionati (solo immagini) non hanno testo da selezionare.
 - Con il testo selezionato non si trascina piu' la pagina col mouse: usa rotellina e barre di scorrimento.
+- **Poster**: nella finestra di stampa, sezione *Poster*, si sceglie **2 × 2**, **3 × 3** o **4 × 4**: ogni pagina viene ingrandita e divisa su più fogli, con **sovrapposizione** (0-30 mm) per ritagliare e incollare i bordi. Il numero di fogli per copia è indicato nella finestra e nell'anteprima.
+- **Cerca aggiornamenti**: nella finestra Info (File > Info) il pulsante controlla l'ultima versione pubblicata e, se ce n'è una più recente, apre la pagina per scaricarla.
 - **Stampa...**: pulsante **Impostazioni driver stampante...** (proprieta' del driver: fronte/retro, vassoio, qualita', colore, finitura...). Le scelte del driver vengono usate nella stampa e ricordate per quella stampante; la carta dell'anteprima segue quella del driver.
 - **Colore e luminosita'**: Colori / Scala di grigi / Bianco e nero e cursore Scuro-Chiaro (valido per anteprima e stampa).
 - **Copie**: pulsanti - e + accanto al numero. Con piu' di una copia il programma chiede conferma ("Sicuro di voler stampare N copie del file?", oppure "...dei file aperti?" con STAMPA TUTTO).
