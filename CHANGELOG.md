@@ -5,7 +5,10 @@ Programma opensource progettato da Peppe CP con l'aiuto della IA.
 
 ### Novità
 - **Preferenze del driver**: scegliendo la stampante, colore (colori/bianco e nero), carta e orientamento seguono le preferenze del driver; la finestra mostra il riepilogo (es. BIANCO E NERO · FRONTE/RETRO).
-- **Stampa a gruppo** dentro le finestre di stampa (in **Stampa…** e in **STAMPA TUTTO**): si scelgono le pagine scheda per scheda (es. pagina 1 del primo file e pagina 3 del secondo) e si uniscono in un unico lavoro, anche in 2 su 1.
+- **Stampa a gruppo** nella finestra **STAMPA TUTTO**: si scelgono le pagine scheda per scheda (es. pagina 1 del primo file e pagina 3 del secondo) e si uniscono in un unico lavoro, anche in 2 su 1. Nella finestra **Stampa…** la sezione è stata tolta: togliendo la spunta a **Fascicola** i fogli escono già raggruppati.
+- **Contrasto di stampa**: nuovo cursore in **Stampa… > Colore, luminosità e contrasto** (meno contrasto per grigi più tenui, più contrasto per neri più decisi), applicato all'anteprima e alla stampa.
+- **Finestra di stampa più compatta**: caratteri leggermente ridotti, così le voci scendono meno in basso e la scelta Colori / Scala di grigi / Bianco e nero resta subito visibile.
+- **Stampa immediata e in parallelo**: cliccando **Stampa** la finestra si chiude e l'invio parte dopo 2 secondi; nel frattempo si può cambiare scheda o avviare altre stampe, che procedono insieme. In basso a destra restano un piccolo avviso con l'avanzamento e il pulsante **Annulla** per fermare una stampa in caso di errore.
 - **STAMPA TUTTO** più grande e chiara: pagine totali, fogli per copia, copie e totale fogli ben visibili, pulsante **AFFIANCA 2 PAGINE** e totale delle copie mostrato subito passando il mouse sull'icona.
 - **Mini anteprime delle pagine** accanto al documento: colonna a sinistra con tutte le pagine, clic su una miniatura per saltare alla pagina; si mostrano o nascondono da **File > Visualizzazione pagine**, dove si possono anche **affiancare 2 pagine** per volta.
 - **Pagine all'avvio** (Impostazioni > Generale): mini anteprime a sinistra, pagine affiancate oppure come al precedente avvio, con salvataggio automatico della vista scelta.

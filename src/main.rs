@@ -37,22 +37,22 @@ enum PageView { Thumbs, Facing, Last }
 /// "Le mie impostazioni predefinite" di stampa (stampante, copie, colore e funzioni del driver, es. fronte/retro).
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
-struct PrintPrefs { printer: String, copies: u32, color: ColorMode, bright: i32, drv_printer: String, drv_mode: String }
+struct PrintPrefs { printer: String, copies: u32, color: ColorMode, bright: i32, contrast: i32, drv_printer: String, drv_mode: String }
 impl Default for PrintPrefs {
-    fn default() -> Self { Self { printer: String::new(), copies: 1, color: ColorMode::Color, bright: 0, drv_printer: String::new(), drv_mode: String::new() } }
+    fn default() -> Self { Self { printer: String::new(), copies: 1, color: ColorMode::Color, bright: 0, contrast: 0, drv_printer: String::new(), drv_mode: String::new() } }
 }
 impl PrintPrefs {
     fn from_settings(st: &Settings) -> Self {
-        Self { printer: st.printer.clone(), copies: st.copies, color: st.color, bright: st.bright, drv_printer: st.drv_printer.clone(), drv_mode: st.drv_mode.clone() }
+        Self { printer: st.printer.clone(), copies: st.copies, color: st.color, bright: st.bright, contrast: st.contrast, drv_printer: st.drv_printer.clone(), drv_mode: st.drv_mode.clone() }
     }
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
-struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, poster: u32, poster_overlap: u32, border: bool, color: ColorMode, bright: i32, drv_printer: String, drv_mode: String, background: bool, start_max: bool, start_pan: bool, fit_page: bool, ask_copies: bool, start_mode: StartMode, reset_std: bool, use_driver_defaults: bool, view: PageView, thumb_on: bool, facing: bool, mine: PrintPrefs }
+struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, poster: u32, poster_overlap: u32, border: bool, color: ColorMode, bright: i32, contrast: i32, drv_printer: String, drv_mode: String, background: bool, start_max: bool, start_pan: bool, fit_page: bool, ask_copies: bool, start_mode: StartMode, reset_std: bool, use_driver_defaults: bool, view: PageView, thumb_on: bool, facing: bool, mine: PrintPrefs }
 impl Default for Settings {
     fn default() -> Self {
-        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, poster: 0, poster_overlap: 0, border: true, color: ColorMode::Color, bright: 0, drv_printer: String::new(), drv_mode: String::new(), background: false, start_max: true, start_pan: false, fit_page: false, ask_copies: true, start_mode: StartMode::Last, reset_std: true, use_driver_defaults: true, view: PageView::Thumbs, thumb_on: true, facing: false, mine: PrintPrefs::default() }
+        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, poster: 0, poster_overlap: 0, border: true, color: ColorMode::Color, bright: 0, contrast: 0, drv_printer: String::new(), drv_mode: String::new(), background: false, start_max: true, start_pan: false, fit_page: false, ask_copies: true, start_mode: StartMode::Last, reset_std: true, use_driver_defaults: true, view: PageView::Thumbs, thumb_on: true, facing: false, mine: PrintPrefs::default() }
     }
 }
 impl Settings {
@@ -65,6 +65,7 @@ impl Settings {
             self.copies = m.copies.max(1);
             self.color = m.color;
             self.bright = m.bright;
+            self.contrast = m.contrast;
             self.drv_printer = m.drv_printer;
             self.drv_mode = m.drv_mode;
         } else {
@@ -322,11 +323,16 @@ fn hit(chars: &[TCh], x: f32, y: f32) -> Option<usize> {
     best.map(|(i, _)| i)
 }
 
-/// Colore / scala di grigi / bianco e nero e chiaro-scuro (curva gamma: il bianco della carta resta bianco).
+/// Colore / scala di grigi / bianco e nero, chiaro-scuro (curva gamma: il bianco della carta resta bianco) e contrasto.
 fn tone(buf: &mut [u8], st: &Settings) {
-    if st.color == ColorMode::Color && st.bright == 0 { return; }
+    if st.color == ColorMode::Color && st.bright == 0 && st.contrast == 0 { return; }
     let g = 2f32.powf(-(st.bright as f32) / 50.0); // >0 = piu' chiaro, <0 = piu' scuro
-    let lut: Vec<u8> = (0..256).map(|v| (255.0 * (v as f32 / 255.0).powf(g)).round().clamp(0.0, 255.0) as u8).collect();
+    let f = 1.0 + st.contrast as f32 / 100.0 * 0.8; // contrasto: -100 = piu' piatto, +100 = piu' deciso
+    let lut: Vec<u8> = (0..256).map(|v| {
+        let x = (v as f32 / 255.0).powf(g);
+        let c = ((x - 0.5) * f + 0.5).clamp(0.0, 1.0);
+        (255.0 * c).round() as u8
+    }).collect();
     for p in buf.chunks_exact_mut(4) {
         let lum = ((0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32) as usize).min(255);
         match st.color {
@@ -547,7 +553,7 @@ mod spool {
 struct Doc { id: u64, pdf: PdfDocument<'static>, path: PathBuf, name: String, sizes: Vec<(f32, f32)>, cur: usize, zoom: f32, fitpage: bool, tex: HashMap<(usize, i32), egui::TextureHandle>, text: HashMap<usize, Vec<TCh>>, ptext: HashMap<usize, Vec<char>> }
 #[derive(PartialEq, Clone, Copy)]
 enum Tab { Home, Doc(usize) }
-type PvKey = (u64, ColorMode, i32); // versione del foglio + colore + chiaro/scuro
+type PvKey = (u64, ColorMode, i32, i32); // versione del foglio + colore + chiaro/scuro + contrasto
 type RawKey = (usize, usize, PageSel, String, u32, bool, ScaleMode, u32, bool, bool, (i32, i32), (u32, u32)); // poster: griglia + sovrapposizione
 /// Carattere del testo di una pagina: unicode + riquadro [sinistra, basso, destra, alto] in punti PDF.
 struct TCh { c: char, r: [f32; 4] }
@@ -558,7 +564,7 @@ struct Sel { doc: usize, page: usize, a: usize, b: usize }
 struct PrintTask {
     ids: Vec<u64>, items: Vec<(u64, usize)>, group: bool, st: Settings, di: usize, job: Option<spool::Job>,
     sheets: Vec<Sheet>, order: Vec<usize>, pos: usize, area: (f32, f32, f32),
-    last: Option<(usize, usize, usize, Vec<u8>)>, total: usize, done: usize, cancel: bool,
+    last: Option<(usize, usize, usize, Vec<u8>)>, total: usize, done: usize, cancel: bool, start: Instant,
 }
 
 /// Richiesta di password per un PDF protetto.
@@ -577,7 +583,7 @@ struct App {
     show_cfg: bool, cfg: Settings, cfg_tab: usize,
     show_pall: bool, pa_mode: bool,
     over_acc: f32, over_at: Instant, edge: (bool, bool), scroll_reset: Option<bool>, tabs_overflow: bool,
-    task: Option<PrintTask>, tab_drag: Option<usize>, next_id: u64,
+    task: Vec<PrintTask>, tab_drag: Option<usize>, next_id: u64,
     pwd_req: Option<PwdReq>, pwd_queue: Vec<PathBuf>,
     upd: Upd, upd_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     drv_key: String, drv_info: Option<spool::DriverPrefs>,
@@ -615,7 +621,7 @@ impl App {
         detect_byte_order(pdfium);
         let start_pan = st.start_pan;
         let ipc = listener.map(|l| { let (tx, rx) = std::sync::mpsc::channel(); serve(l, tx, cc.egui_ctx.clone()); rx });
-        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: None, tab_drag: None, next_id: 1, pwd_req: None, pwd_queue: vec![], upd: Upd::None, upd_rx: None, drv_key: String::new(), drv_info: None, grp_use: false, grp_pages: vec![], thumb_panel, facing, thumbs: HashMap::new() };
+        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: vec![], tab_drag: None, next_id: 1, pwd_req: None, pwd_queue: vec![], upd: Upd::None, upd_rx: None, drv_key: String::new(), drv_info: None, grp_use: false, grp_pages: vec![], thumb_panel, facing, thumbs: HashMap::new() };
         for a in init { app.open(a); }
         app
     }
@@ -874,8 +880,8 @@ impl App {
     }
 
     /// Avvia la stampa delle schede indicate (nell'ordine dato). `all_pages` = true: tutte le pagine di ogni scheda (STAMPA TUTTO).
+    /// La stampa parte da sola dopo 2 secondi, cosi' si puo' subito passare a un'altra scheda o avviare un'altra stampa.
     fn print_docs(&mut self, idx: &[usize], all_pages: bool) {
-        if self.task.is_some() { self.toast("Stampa gia' in corso".into()); return; }
         if self.st.printer.is_empty() { err("Nessuna stampante selezionata"); return; }
         let mut st = self.st.clone();
         if all_pages { st.sel = PageSel::All; }
@@ -884,20 +890,19 @@ impl App {
         let c = st.copies.max(1) as usize;
         let total: usize = ids.iter().filter_map(|id| self.docs.iter().find(|d| d.id == *id))
             .map(|d| sheets_for(&st, d.id, &pages_for(&st, d.cur, d.sizes.len())).len() * c).sum();
-        self.task = Some(PrintTask { ids, items: vec![], group: false, st, di: 0, job: None, sheets: vec![], order: vec![], pos: 0, area: (595.0, 842.0, 72.0), last: None, total, done: 0, cancel: false });
+        self.task.push(PrintTask { ids, items: vec![], group: false, st, di: 0, job: None, sheets: vec![], order: vec![], pos: 0, area: (595.0, 842.0, 72.0), last: None, total, done: 0, cancel: false, start: Instant::now() + Duration::from_secs(2) });
     }
 
     /// STAMPA A GRUPPO: le pagine scelte (anche da file diversi) vanno in un unico lavoro e vengono impaginate
     /// insieme, cosi' il 2 su 1 puo' affiancare per esempio pagina 1 del primo file e pagina 3 del secondo.
     fn print_group(&mut self, items: Vec<(u64, usize)>) {
-        if self.task.is_some() { self.toast("Stampa gia' in corso".into()); return; }
         if self.st.printer.is_empty() { err("Nessuna stampante selezionata"); return; }
         if items.is_empty() { err("Nessuna pagina scelta per la stampa a gruppo".into()); return; }
         let st = self.st.clone();
         let sheets = sheets_for_items(&st, &items);
         if sheets.is_empty() { return; }
         let total = sheets.len() * st.copies.max(1) as usize;
-        self.task = Some(PrintTask { ids: vec![], items, group: true, st, di: 0, job: None, sheets: vec![], order: vec![], pos: 0, area: (595.0, 842.0, 72.0), last: None, total, done: 0, cancel: false });
+        self.task.push(PrintTask { ids: vec![], items, group: true, st, di: 0, job: None, sheets: vec![], order: vec![], pos: 0, area: (595.0, 842.0, 72.0), last: None, total, done: 0, cancel: false, start: Instant::now() + Duration::from_secs(2) });
     }
 
     /// Elenco delle pagine scelte per la stampa a gruppo (documento + pagina, nell'ordine delle schede).
@@ -966,23 +971,39 @@ impl App {
         Ok(())
     }
 
-    /// Un passo del lavoro di stampa. Quando finisce, il lavoro e' in coda nella stampante e il cerchio di caricamento sparisce.
+    /// Un passo per ogni lavoro di stampa in corso (anche piu' lavori insieme). Quando un lavoro finisce,
+    /// e' in coda nella stampante e il suo cerchio di caricamento sparisce.
     fn print_step(&mut self, ctx: &egui::Context) {
-        let Some(mut t) = self.task.take() else { return };
-        if t.cancel {
-            if let Some(j) = t.job.as_mut() { j.abort(); }
-            self.toast("Stampa annullata".into());
-            return;
-        }
-        match self.advance(&mut t) {
-            Ok(true) => { self.task = Some(t); ctx.request_repaint(); }
-            Ok(false) => {
-                let p = t.st.printer.clone();
-                let cosa = if t.group { format!("{} fogli in coda", t.sheets.len()) } else { format!("{} schede in coda", t.ids.len()) };
-                self.toast(format!("Lavoro inviato a «{p}» ({cosa})"));
+        if self.task.is_empty() { return; }
+        let mut running = std::mem::take(&mut self.task);
+        let mut kept: Vec<PrintTask> = Vec::with_capacity(running.len());
+        let now = Instant::now();
+        let mut wait = false;
+        for mut t in running.drain(..) {
+            if t.cancel {
+                if let Some(j) = t.job.as_mut() { j.abort(); }
+                self.toast("Stampa annullata".into());
+                continue;
             }
-            Err(e) => { if let Some(j) = t.job.as_mut() { j.abort(); } err(&e); }
+            if now < t.start { // attesa di 2 secondi prima di iniziare: si puo' continuare a lavorare nel frattempo
+                wait = true;
+                kept.push(t);
+                continue;
+            }
+            match self.advance(&mut t) {
+                Ok(true) => kept.push(t),
+                Ok(false) => {
+                    let p = t.st.printer.clone();
+                    let cosa = if t.group { format!("{} fogli in coda", t.sheets.len()) } else { format!("{} schede in coda", t.ids.len()) };
+                    self.toast(format!("Lavoro inviato a «{p}» ({cosa})"));
+                }
+                Err(e) => { if let Some(j) = t.job.as_mut() { j.abort(); } err(&e); }
+            }
         }
+        let busy = !kept.is_empty();
+        self.task = kept;
+        if wait { ctx.request_repaint_after(Duration::from_millis(100)); }
+        else if busy { ctx.request_repaint(); }
     }
 
     /// Esegue un'unita' di lavoro: apre il lavoro di una scheda, oppure invia un foglio, oppure chiude il lavoro (che va in coda).
@@ -1246,7 +1267,7 @@ impl App {
     }
 
     fn print_dialog(&mut self, ctx: &egui::Context, di: usize) {
-        let (mut open, mut go, mut cancel, mut drv, mut drv_reset, mut grp_go) = (true, false, false, false, false, false);
+        let (mut open, mut go, mut cancel, mut drv, mut drv_reset) = (true, false, false, false, false);
         let n = self.docs[di].sizes.len();
         // cambiando stampante le selezioni ripartono dalle preferenze del driver (colore/b/n, orientamento, copie)
         if self.drv_key != self.draft.printer {
@@ -1279,7 +1300,7 @@ impl App {
                 .and_then(|sh| compose(&self.pdfium, &self.docs, &sh.items, self.paper, &self.draft, 1.5, false, sh.tile))
                 .map(|(w, h, b)| (rk, w, h, b));
         }
-        let tk: PvKey = (self.pv_gen, self.draft.color, self.draft.bright);
+        let tk: PvKey = (self.pv_gen, self.draft.color, self.draft.bright, self.draft.contrast);
         if self.pv.as_ref().map(|p| &p.0) != Some(&tk) {
             self.pv = self.pv_raw.as_ref().map(|(_, w, h, b)| {
                 let mut t = b.clone();
@@ -1289,14 +1310,14 @@ impl App {
         }
         let maxh = (ctx.screen_rect().height() - 140.0).max(320.0);
         egui::Window::new("Stampa").open(&mut open).collapsible(false).resizable(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
-            { // pulsanti e testi piu' grandi
+            { // testi un po' piu' grandi del normale, ma compatti: le voci scendono meno in basso
                 let s = ui.style_mut();
-                s.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(15.5));
-                s.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.5));
-                s.spacing.button_padding = Vec2::new(12.0, 6.0);
-                s.spacing.interact_size.y = 28.0;
-                s.spacing.icon_width = 19.0;
-                s.spacing.slider_width = 190.0;
+                s.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(13.5));
+                s.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(12.5));
+                s.spacing.button_padding = Vec2::new(10.0, 4.0);
+                s.spacing.interact_size.y = 23.0;
+                s.spacing.icon_width = 17.0;
+                s.spacing.slider_width = 180.0;
             }
             if self.pa_mode {
                 ui.label(RichText::new(format!("STAMPA TUTTO: LE IMPOSTAZIONI VALGONO PER TUTTE LE {} SCHEDE APERTE (TUTTE LE PAGINE DI OGNI SCHEDA)", self.docs.len())).strong().color(ACCENT));
@@ -1306,7 +1327,7 @@ impl App {
                 ui.spacing_mut().scroll = egui::style::ScrollStyle::solid(); // barra di scorrimento ben visibile quando serve
                 egui::ScrollArea::vertical().max_height(maxh).auto_shrink([true, true]).show(ui, |ui| {
                     ui.vertical(|ui| {
-                        ui.set_width(390.0);
+                        ui.set_width(400.0);
                         ui.group(|ui| {
                             ui.label(RichText::new("Stampante").strong().color(ACCENT));
                             egui::ComboBox::from_id_salt("pr").width(350.0).selected_text(self.draft.printer.clone()).show_ui(ui, |ui| {
@@ -1385,13 +1406,8 @@ impl App {
                             }
                         });
                         ui.group(|ui| {
-                            ui.label(RichText::new("Stampa a gruppo").strong().color(ACCENT));
-                            if self.docs.len() < 2 { ui.label(RichText::new("Apri almeno due PDF per unire pagine di file diversi. Con un solo PDF il gruppo resta nelle sue pagine.").weak().small()); }
-                            ui.collapsing("Scegli le pagine scheda per scheda…", |ui| { if self.group_ui(ui) { grp_go = true; } });
-                        });
-                        ui.group(|ui| {
-                            ui.label(RichText::new("Colore e luminosità").strong().color(ACCENT));
-                            ui.horizontal(|ui| {
+                            ui.label(RichText::new("Colore, luminosità e contrasto").strong().color(ACCENT));
+                            ui.horizontal_wrapped(|ui| {
                                 ui.radio_value(&mut self.draft.color, ColorMode::Color, "Colori");
                                 ui.radio_value(&mut self.draft.color, ColorMode::Gray, "Scala di grigi");
                                 ui.radio_value(&mut self.draft.color, ColorMode::Bw, "Bianco e nero");
@@ -1400,7 +1416,12 @@ impl App {
                                 ui.label("Scuro");
                                 ui.add(egui::Slider::new(&mut self.draft.bright, -100..=100).show_value(false));
                                 ui.label("Chiaro");
-                                if ui.add(Button::new("0").min_size(Vec2::new(36.0, 30.0))).on_hover_text("Azzera chiaro/scuro").clicked() { self.draft.bright = 0; }
+                                if ui.add(Button::new("0").min_size(Vec2::new(30.0, 24.0))).on_hover_text("Azzera chiaro/scuro").clicked() { self.draft.bright = 0; }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Contrasto");
+                                ui.add(egui::Slider::new(&mut self.draft.contrast, -100..=100).show_value(false)).on_hover_text("Meno contrasto = grigi più tenui; più contrasto = neri più decisi, utile per scansioni sbiadite");
+                                if ui.add(Button::new("0").min_size(Vec2::new(30.0, 24.0))).on_hover_text("Azzera contrasto").clicked() { self.draft.contrast = 0; }
                             });
                         });
                         ui.label(RichText::new("Le impostazioni vengono ricordate per «Stampa subito».").weak());
@@ -1442,11 +1463,6 @@ impl App {
             } else if !cfg!(windows) { self.toast("Le impostazioni del driver sono disponibili solo su Windows".into()); }
         }
         if drv_reset { self.draft.drv_mode.clear(); }
-        if grp_go { // stampa a gruppo con le impostazioni scelte in questa finestra
-            self.st = self.draft.clone(); self.st.save(); self.show_print = false; self.pa_mode = false;
-            let items = self.group_items();
-            self.print_group(items);
-        }
         if go {
             let c = self.draft.copies;
             let testo = if self.pa_mode { format!("Sicuro di voler stampare {c} copie dei file aperti?") } else { format!("Sicuro di voler stampare {c} copie del file?
@@ -1907,23 +1923,27 @@ impl eframe::App for App {
             if q { self.print_one(i); }
         }
         if all { self.print_all(); }
-        // ---- stampa in corso: cerchio di caricamento finche' il lavoro non e' in coda nella stampante ----
-        let mut cancel_print = false;
-        if let Some(t) = &self.task {
-            let testo = if t.group { format!("Invio alla stampante…  {}/{} fogli · stampa a gruppo", t.done.min(t.total), t.total) }
-                else { format!("Invio alla stampante…  {}/{} fogli · scheda {}/{}", t.done.min(t.total), t.total, (t.di + 1).min(t.ids.len()), t.ids.len()) };
+        // ---- stampa in corso: cerchio di caricamento e piccolo pulsante Annulla in basso a destra per ogni lavoro ----
+        let mut cancel_print: Vec<usize> = vec![];
+        if !self.task.is_empty() {
+            let now = Instant::now();
             egui::Area::new(egui::Id::new("printing")).order(egui::Order::Foreground).anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -16.0]).show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().size(20.0));
-                        ui.label(RichText::new(testo).strong());
-                        if ui.small_button("Annulla").clicked() { cancel_print = true; }
-                    });
+                    for (k, t) in self.task.iter().enumerate() {
+                        let testo = if now < t.start { "Stampa in avvio…".to_string() }
+                            else if t.group { format!("Invio alla stampante…  {}/{} fogli · stampa a gruppo", t.done.min(t.total), t.total) }
+                            else { format!("Invio alla stampante…  {}/{} fogli · scheda {}/{}", t.done.min(t.total), t.total, (t.di + 1).min(t.ids.len()), t.ids.len()) };
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(16.0));
+                            ui.label(RichText::new(testo).small());
+                            if ui.small_button("Annulla").on_hover_text("Annulla questa stampa").clicked() { cancel_print.push(k); }
+                        });
+                    }
                 });
             });
         }
-        if cancel_print { if let Some(t) = self.task.as_mut() { t.cancel = true; } }
-        if self.task.is_some() { self.print_step(ctx); }
+        for k in cancel_print { if let Some(t) = self.task.get_mut(k) { t.cancel = true; } }
+        if !self.task.is_empty() { self.print_step(ctx); }
         if let Some(rx) = &self.upd_rx {
             match rx.try_recv() {
                 Ok(Ok(v)) => { self.upd = Upd::Ver(v); self.upd_rx = None; }
