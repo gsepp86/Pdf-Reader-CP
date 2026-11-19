@@ -30,6 +30,10 @@ enum ColorMode { Color, Gray, Bw }
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
 enum StartMode { Last, Mine }
 
+/// Vista delle pagine all'avvio: anteprime a sinistra, pagine affiancate oppure come al precedente avvio.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+enum PageView { Thumbs, Facing, Last }
+
 /// "Le mie impostazioni predefinite" di stampa (stampante, copie, colore e funzioni del driver, es. fronte/retro).
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
@@ -45,10 +49,10 @@ impl PrintPrefs {
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
-struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, poster: u32, poster_overlap: u32, border: bool, color: ColorMode, bright: i32, drv_printer: String, drv_mode: String, background: bool, start_max: bool, start_pan: bool, fit_page: bool, ask_copies: bool, start_mode: StartMode, reset_std: bool, use_driver_defaults: bool, mine: PrintPrefs }
+struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, poster: u32, poster_overlap: u32, border: bool, color: ColorMode, bright: i32, drv_printer: String, drv_mode: String, background: bool, start_max: bool, start_pan: bool, fit_page: bool, ask_copies: bool, start_mode: StartMode, reset_std: bool, use_driver_defaults: bool, view: PageView, thumb_on: bool, facing: bool, mine: PrintPrefs }
 impl Default for Settings {
     fn default() -> Self {
-        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, poster: 0, poster_overlap: 0, border: true, color: ColorMode::Color, bright: 0, drv_printer: String::new(), drv_mode: String::new(), background: false, start_max: true, start_pan: false, fit_page: false, ask_copies: true, start_mode: StartMode::Last, reset_std: true, use_driver_defaults: true, mine: PrintPrefs::default() }
+        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, poster: 0, poster_overlap: 0, border: true, color: ColorMode::Color, bright: 0, drv_printer: String::new(), drv_mode: String::new(), background: false, start_max: true, start_pan: false, fit_page: false, ask_copies: true, start_mode: StartMode::Last, reset_std: true, use_driver_defaults: true, view: PageView::Thumbs, thumb_on: true, facing: false, mine: PrintPrefs::default() }
     }
 }
 impl Settings {
@@ -577,7 +581,7 @@ struct App {
     pwd_req: Option<PwdReq>, pwd_queue: Vec<PathBuf>,
     upd: Upd, upd_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     drv_key: String, drv_info: Option<spool::DriverPrefs>,
-    grp_use: bool, grp_pages: Vec<(u64, String)>, thumb_panel: bool, thumbs: HashMap<(u64, usize), egui::TextureHandle>,
+    grp_use: bool, grp_pages: Vec<(u64, String)>, thumb_panel: bool, facing: bool, thumbs: HashMap<(u64, usize), egui::TextureHandle>,
 }
 
 impl App {
@@ -598,6 +602,12 @@ impl App {
         printers.dedup();
         let mut st = Settings::load();
         st.apply_startup(&printers);
+        // vista iniziale delle pagine: scelta nelle impostazioni o come l'ultima volta
+        let (thumb_panel, facing) = match st.view {
+            PageView::Thumbs => (true, false),
+            PageView::Facing => (false, true),
+            PageView::Last => (st.thumb_on, st.facing),
+        };
         if !printers.contains(&st.printer) {
             st.printer = printers::get_default_printer().map(|p| p.name).or_else(|| printers.first().cloned()).unwrap_or_default();
         }
@@ -605,7 +615,7 @@ impl App {
         detect_byte_order(pdfium);
         let start_pan = st.start_pan;
         let ipc = listener.map(|l| { let (tx, rx) = std::sync::mpsc::channel(); serve(l, tx, cc.egui_ctx.clone()); rx });
-        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: None, tab_drag: None, next_id: 1, pwd_req: None, pwd_queue: vec![], upd: Upd::None, upd_rx: None, drv_key: String::new(), drv_info: None, grp_use: false, grp_pages: vec![], thumb_panel: true, thumbs: HashMap::new() };
+        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: None, tab_drag: None, next_id: 1, pwd_req: None, pwd_queue: vec![], upd: Upd::None, upd_rx: None, drv_key: String::new(), drv_info: None, grp_use: false, grp_pages: vec![], thumb_panel, facing, thumbs: HashMap::new() };
         for a in init { app.open(a); }
         app
     }
@@ -760,6 +770,66 @@ impl App {
         Some(t)
     }
 
+    /// Disegna una pagina nell'area documento e ne gestisce la selezione del testo.
+    /// Restituisce (pagina senza testo selezionabile, copia richiesta).
+    fn page_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, i: usize, page: usize, w: f32, h: f32, centered: bool) -> (bool, bool) {
+        let (mut no_text, mut copy_req) = (false, false);
+        let bucket = (((w * ctx.pixels_per_point()) as i32).clamp(800, 3200) + 399) / 400 * 400;
+        let Some(t) = self.get_tex(ctx, i, page, bucket) else { return (false, false) };
+        let (pw, ph) = self.docs[i].sizes[page];
+        let empty: Vec<TCh> = Vec::new();
+        let loaded = self.docs[i].text.contains_key(&page);
+        let chars = self.docs[i].text.get(&page).unwrap_or(&empty);
+        let ptext = self.docs[i].ptext.get(&page);
+        let sel = &mut self.sel;
+        let pan = self.pan;
+        let shit = self.search_hit;
+        let q: Vec<char> = self.search.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
+        let img = egui::Image::new(egui::load::SizedTexture::new(t.id(), Vec2::new(w, h))).sense(if pan { egui::Sense::click() } else { egui::Sense::click_and_drag() });
+        let resp = if centered { ui.vertical_centered(|ui| ui.add(img)).inner } else { ui.add(img) };
+        let to_pt = |p: egui::Pos2| ((p.x - resp.rect.min.x) / w * pw, ph - (p.y - resp.rect.min.y) / h * ph);
+        let rect_of = |c: &TCh| egui::Rect::from_min_max(
+            egui::pos2(resp.rect.min.x + c.r[0] / pw * w, resp.rect.min.y + (ph - c.r[3]) / ph * h),
+            egui::pos2(resp.rect.min.x + c.r[2] / pw * w, resp.rect.min.y + (ph - c.r[1]) / ph * h));
+        if resp.hovered() {
+            if pan { ctx.set_cursor_icon(if ui.input(|i| i.pointer.primary_down()) { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab }); }
+            else if !loaded || !chars.is_empty() { ctx.set_cursor_icon(egui::CursorIcon::Text); }
+        }
+        if !pan {
+            if resp.drag_started() {
+                if loaded && chars.is_empty() { no_text = true; }
+                *sel = resp.interact_pointer_pos().and_then(|p| { let (x, y) = to_pt(p); hit(chars, x, y) }).map(|k| Sel { doc: i, page, a: k, b: k });
+            } else if resp.dragged() {
+                if let (Some(p), Some(s)) = (resp.interact_pointer_pos(), sel.as_mut()) {
+                    let (x, y) = to_pt(p);
+                    if let Some(k) = hit(chars, x, y) { s.b = k; }
+                }
+            } else if resp.clicked() { *sel = None; }
+        }
+        // risultati della ricerca (giallo; quello corrente arancione)
+        if let (false, Some(tx)) = (q.is_empty(), ptext) {
+            let cur_hit = shit.filter(|(p, _)| *p == page).map(|(_, st)| st);
+            for st in find_all(tx, &q) {
+                let col = if Some(st) == cur_hit { Color32::from_rgba_unmultiplied(255, 140, 0, 150) } else { Color32::from_rgba_unmultiplied(255, 214, 0, 110) };
+                for c in chars.iter().skip(st).take(q.len()) { if c.r[2] - c.r[0] >= 0.01 { ui.painter().rect_filled(rect_of(c), 0.0, col); } }
+            }
+        }
+        // testo selezionato
+        if let Some(s) = sel.as_ref() {
+            let (lo, hi) = (s.a.min(s.b), s.a.max(s.b));
+            for c in chars.iter().skip(lo).take(hi + 1 - lo) { if c.r[2] - c.r[0] >= 0.01 { ui.painter().rect_filled(rect_of(c), 0.0, Color32::from_rgba_unmultiplied(51, 144, 255, 90)); } }
+        }
+        resp.context_menu(|ui| {
+            if ui.button("Copia").clicked() { copy_req = true; ui.close_menu(); }
+            if ui.button("Seleziona tutto").clicked() {
+                let mut it = chars.iter().enumerate().filter(|(_, c)| c.r[2] - c.r[0] > 0.01 && c.r[3] - c.r[1] > 0.01).map(|(k, _)| k);
+                if let Some(a) = it.next() { let b = it.last().unwrap_or(a); *sel = Some(Sel { doc: i, page, a, b }); }
+                ui.close_menu();
+            }
+        });
+        (no_text, copy_req)
+    }
+
     /// Texture della miniatura di una pagina (resa a bassa risoluzione la prima volta che serve).
     fn thumb_tex(&mut self, ctx: &egui::Context, di: usize, page: usize) -> Option<egui::TextureHandle> {
         let id = self.docs.get(di)?.id;
@@ -841,6 +911,43 @@ impl App {
             for p in pages_for(&tmp, d.cur, d.sizes.len()) { v.push((*id, p)); }
         }
         v
+    }
+
+    /// Riquadro della stampa a gruppo, usato dalle finestre di stampa: pagine scelte scheda per scheda
+    /// (anche da file diversi) unite in un unico lavoro. Restituisce true quando si preme STAMPA A GRUPPO.
+    fn group_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut go = false;
+        // una riga per scheda: mantiene le pagine scelte e aggiunge le schede nuove (tutte le pagine)
+        let gp: Vec<(u64, String)> = self.docs.iter().map(|d| {
+            let spec = self.grp_pages.iter().find(|(id, _)| *id == d.id).map(|x| x.1.clone()).unwrap_or_else(|| format!("1-{}", d.sizes.len()));
+            (d.id, spec)
+        }).collect();
+        self.grp_pages = gp;
+        let names: Vec<(String, usize)> = self.docs.iter().map(|d| (d.name.clone(), d.sizes.len())).collect();
+        let g_items = self.group_items();
+        let g_sheets = sheets_for_items(&self.st, &g_items).len();
+        let g_tot = g_sheets * self.st.copies.max(1) as usize;
+        ui.label(RichText::new("GRUPPO DI PAGINE (ANCHE DA FILE DIVERSI)").strong().color(ACCENT));
+        ui.checkbox(&mut self.grp_use, "Unisci le pagine scelte in un unico lavoro");
+        ui.label(RichText::new("Es. «1» nella prima scheda e «3» nella seconda: con 2 pagine per foglio finiscono sullo stesso foglio. «1-3, 5», «2x3», vuoto = nessuna pagina.").weak().small());
+        ui.add_enabled_ui(self.grp_use, |ui| {
+            egui::ScrollArea::vertical().max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
+                for (i, (name, np)) in names.iter().enumerate() {
+                    let Some((_, spec)) = self.grp_pages.get_mut(i) else { continue };
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{}. {}", i + 1, short(name, 26))).small());
+                        ui.label(RichText::new(format!("({np} pag.)")).weak().small());
+                        ui.add(egui::TextEdit::singleline(spec).hint_text("pagine").desired_width(170.0));
+                    });
+                }
+            });
+        });
+        if self.grp_use {
+            ui.label(RichText::new(format!("GRUPPO: {} PAGINE → {g_sheets} FOGLI PER COPIA · {g_tot} TOTALI", g_items.len())).strong().small());
+        }
+        if ui.add(Button::new(RichText::new("STAMPA A GRUPPO").strong().size(16.0).color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(190.0, 40.0)))
+            .on_hover_text("Stampa solo le pagine scelte qui sopra, unite in un unico lavoro").clicked() { go = true; }
+        go
     }
 
     /// Compone e invia un foglio del lavoro (con cache dell'ultimo foglio reso).
@@ -950,13 +1057,9 @@ impl App {
         let pagine: usize = self.docs.iter().map(|d| d.sizes.len()).sum();
         let fogli: usize = self.docs.iter().map(|d| sheets_for(&self.st, d.id, &(0..d.sizes.len()).collect::<Vec<_>>()).len()).sum(); // fogli per copia
         let tot = fogli * c as usize;
-        let g_items = self.group_items();
-        let g_sheets = sheets_for_items(&self.st, &g_items).len();
-        let g_tot = g_sheets * c as usize;
         let warn = c > 1 && self.st.ask_copies;
         let colore = match self.st.color { ColorMode::Color => "COLORI", ColorMode::Gray => "SCALA DI GRIGI", ColorMode::Bw => "BIANCO E NERO" };
         let stampante = self.st.printer.to_uppercase();
-        let names: Vec<(String, usize)> = self.docs.iter().map(|d| (d.name.clone(), d.sizes.len())).collect();
         egui::Window::new("STAMPA TUTTO").open(&mut open).collapsible(false).resizable(true).default_size(Vec2::new(880.0, 600.0)).min_width(760.0).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
             ui.set_min_width(840.0);
             {
@@ -991,31 +1094,11 @@ impl App {
                         if self.st.poster >= 2 { ui.label(RichText::new("Il poster è attivo: pagine per foglio non usate.").weak().small()); }
                     });
                     ui.add_space(6.0);
-                    ui.group(|ui| {
-                        ui.label(RichText::new("GRUPPO DI PAGINE (ANCHE DA FILE DIVERSI)").strong().color(ACCENT));
-                        ui.checkbox(&mut self.grp_use, "Unisci le pagine scelte in un unico lavoro");
-                        ui.label(RichText::new("Es. «1» nella prima scheda e «3» nella seconda: con AFFIANCA 2 PAGINE finiscono sullo stesso foglio. «1-3, 5», «2x3», vuoto = nessuna pagina.").weak().small());
-                        ui.add_enabled_ui(self.grp_use, |ui| {
-                            egui::ScrollArea::vertical().max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
-                                for (i, (name, np)) in names.iter().enumerate() {
-                                    let Some((_, spec)) = self.grp_pages.get_mut(i) else { continue };
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(format!("{}. {}", i + 1, short(name, 26))).small());
-                                        ui.label(RichText::new(format!("({np} pag.)")).weak().small());
-                                        ui.add(egui::TextEdit::singleline(spec).hint_text("pagine").desired_width(170.0));
-                                    });
-                                }
-                            });
-                        });
-                        if self.grp_use {
-                            ui.label(RichText::new(format!("GRUPPO: {} PAGINE → {g_sheets} FOGLI PER COPIA · {g_tot} TOTALI", g_items.len())).strong().small());
-                        }
-                    });
+                    ui.group(|ui| { if self.group_ui(ui) { go_grp = true; } });
                     ui.label(RichText::new("LE SCHEDE VENGONO STAMPATE NELL'ORDINE IN CUI SONO DISPOSTE").weak().small());
                     ui.add_space(8.0);
                     ui.horizontal_wrapped(|ui| {
                         if ui.add(Button::new(RichText::new("STAMPA").strong().size(16.0).color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(130.0, 40.0))).clicked() { go = true; }
-                        if ui.add(Button::new(RichText::new("STAMPA A GRUPPO").strong().size(16.0).color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(190.0, 40.0))).on_hover_text("Stampa solo le pagine scelte qui sopra, unite in un unico lavoro").clicked() { go_grp = true; }
                         if ui.add(Button::new(RichText::new("CAMBIA").size(16.0)).min_size(Vec2::new(110.0, 40.0))).on_hover_text("APRE LE IMPOSTAZIONI DI STAMPA").clicked() { change = true; }
                         if warn && ui.add(Button::new(RichText::new("1 COPIA PER FILE").size(16.0)).min_size(Vec2::new(160.0, 40.0))).on_hover_text("IMPOSTA 1 COPIA PER FILE E STAMPA").clicked() { one = true; }
                         if ui.add(Button::new(RichText::new("ANNULLA").size(16.0)).min_size(Vec2::new(110.0, 40.0))).clicked() { cancel = true; }
@@ -1083,6 +1166,12 @@ impl App {
                         ui.radio_value(&mut self.cfg.fit_page, false, "Larghezza");
                         ui.radio_value(&mut self.cfg.fit_page, true, "Pagina intera");
                     });
+                    ui.separator();
+                    ui.label(RichText::new("Pagine all'avvio:").small());
+                    ui.radio_value(&mut self.cfg.view, PageView::Thumbs, "Mini anteprime sulla sinistra");
+                    ui.radio_value(&mut self.cfg.view, PageView::Facing, "Pagine affiancate (2 per volta)");
+                    ui.radio_value(&mut self.cfg.view, PageView::Last, "Come al precedente avvio (salva le modifiche)");
+                    ui.label(RichText::new("Con l'ultima scelta la vista cambiata dal menu File > Visualizzazione pagine viene salvata a ogni modifica.").weak().small());
                 });
             } else {
                 ui.group(|ui| {
@@ -1141,12 +1230,23 @@ impl App {
             }
         }
         if take { self.cfg.mine = PrintPrefs::from_settings(&self.st); }
-        if save { self.st = self.cfg.clone(); self.st.save(); self.show_cfg = false; self.toast("Impostazioni salvate".into()); }
+        if save {
+            if self.cfg.view == PageView::Last { self.cfg.thumb_on = self.thumb_panel; self.cfg.facing = self.facing; }
+            self.st = self.cfg.clone();
+            self.st.save();
+            match self.cfg.view {
+                PageView::Thumbs => { self.thumb_panel = true; self.facing = false; }
+                PageView::Facing => { self.thumb_panel = false; self.facing = true; }
+                PageView::Last => { self.thumb_panel = self.cfg.thumb_on; self.facing = self.cfg.facing; }
+            }
+            self.show_cfg = false;
+            self.toast("Impostazioni salvate".into());
+        }
         if cancel || !open { self.show_cfg = false; }
     }
 
     fn print_dialog(&mut self, ctx: &egui::Context, di: usize) {
-        let (mut open, mut go, mut cancel, mut drv, mut drv_reset) = (true, false, false, false, false);
+        let (mut open, mut go, mut cancel, mut drv, mut drv_reset, mut grp_go) = (true, false, false, false, false, false);
         let n = self.docs[di].sizes.len();
         // cambiando stampante le selezioni ripartono dalle preferenze del driver (colore/b/n, orientamento, copie)
         if self.drv_key != self.draft.printer {
@@ -1285,6 +1385,11 @@ impl App {
                             }
                         });
                         ui.group(|ui| {
+                            ui.label(RichText::new("Stampa a gruppo").strong().color(ACCENT));
+                            if self.docs.len() < 2 { ui.label(RichText::new("Apri almeno due PDF per unire pagine di file diversi. Con un solo PDF il gruppo resta nelle sue pagine.").weak().small()); }
+                            ui.collapsing("Scegli le pagine scheda per scheda…", |ui| { if self.group_ui(ui) { grp_go = true; } });
+                        });
+                        ui.group(|ui| {
                             ui.label(RichText::new("Colore e luminosità").strong().color(ACCENT));
                             ui.horizontal(|ui| {
                                 ui.radio_value(&mut self.draft.color, ColorMode::Color, "Colori");
@@ -1337,6 +1442,11 @@ impl App {
             } else if !cfg!(windows) { self.toast("Le impostazioni del driver sono disponibili solo su Windows".into()); }
         }
         if drv_reset { self.draft.drv_mode.clear(); }
+        if grp_go { // stampa a gruppo con le impostazioni scelte in questa finestra
+            self.st = self.draft.clone(); self.st.save(); self.show_print = false; self.pa_mode = false;
+            let items = self.group_items();
+            self.print_group(items);
+        }
         if go {
             let c = self.draft.copies;
             let testo = if self.pa_mode { format!("Sicuro di voler stampare {c} copie dei file aperti?") } else { format!("Sicuro di voler stampare {c} copie del file?
@@ -1449,7 +1559,7 @@ impl eframe::App for App {
         for m in msgs { if let Ipc::Open(p) = m { self.open(p); } }
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
         for p in dropped { self.open(p); }
-        let (mut o, mut pd, mut q, mut all, mut grp) = (false, false, false, false, false);
+        let (mut o, mut pd, mut q, mut all) = (false, false, false, false);
         ctx.input_mut(|i| {
             o |= i.consume_key(egui::Modifiers::COMMAND, egui::Key::O);
             q |= i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::P);
@@ -1459,9 +1569,10 @@ impl eframe::App for App {
         if let Tab::Doc(i) = self.tab {
             if !self.show_print && !ctx.wants_keyboard_input() {
                 let (nx, pv, z) = ctx.input(|i| (i.key_pressed(egui::Key::PageDown) || i.key_pressed(egui::Key::ArrowRight), i.key_pressed(egui::Key::PageUp) || i.key_pressed(egui::Key::ArrowLeft), i.zoom_delta()));
+                let step = if self.facing { 2 } else { 1 };
                 if let Some(d) = self.docs.get_mut(i) {
-                    if nx && d.cur + 1 < d.sizes.len() { d.cur += 1; }
-                    if pv && d.cur > 0 { d.cur -= 1; }
+                    if nx && d.cur + step < d.sizes.len() { d.cur += step; }
+                    if pv && d.cur > 0 { d.cur = d.cur.saturating_sub(step); }
                     if z != 1.0 { d.zoom = (d.zoom * z).clamp(0.3, 4.0); }
                 }
             }
@@ -1502,6 +1613,15 @@ impl eframe::App for App {
         let mut reorder: Option<(usize, usize)> = None;
         let (mut close_all, mut show_info, mut quit, mut fs_toggle) = (false, false, false, false);
         let want_scroll = std::mem::take(&mut self.scroll_tab);
+        // totale delle copie calcolato al volo: basta fermare il mouse su STAMPA TUTTO
+        let all_tip = if has_docs {
+            let c = self.st.copies.max(1) as usize;
+            let mut s = self.st.clone();
+            s.sel = PageSel::All;
+            let pagine: usize = self.docs.iter().map(|d| d.sizes.len()).sum();
+            let fogli: usize = self.docs.iter().map(|d| sheets_for(&s, d.id, &(0..d.sizes.len()).collect::<Vec<_>>()).len()).sum();
+            format!("STAMPA TUTTO: tutte le schede aperte, ognuna per intero\n{pagine} pagine in {} schede · {fogli} fogli per copia × {c} copie = {} fogli da stampare", self.docs.len(), fogli * c)
+        } else { "STAMPA TUTTO: tutte le schede aperte, ognuna per intero".to_string() };
         egui::TopBottomPanel::top("top")
             .exact_height(if self.tabs_overflow { 52.0 } else { 38.0 })
             .frame(egui::Frame::none().fill(BAR).inner_margin(egui::Margin::symmetric(6.0, 3.0)))
@@ -1516,13 +1636,9 @@ impl eframe::App for App {
                         if icon_btn(ui, Ic::Max, if maxed { "Ripristina" } else { "Massimizza" }, true) { ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maxed)); }
                         if icon_btn(ui, Ic::Min, "Riduci a icona", true) { ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); }
                         ui.separator();
-                        all |= icon_btn(ui, Ic::All, "STAMPA TUTTO: tutte le schede aperte, ognuna per intero", has_docs);
+                        all |= icon_btn(ui, Ic::All, &all_tip, has_docs);
                         q |= icon_btn(ui, Ic::Quick, "Stampa subito: scheda corrente, ultime impostazioni (Ctrl+Maiusc+P)", cur_doc.is_some());
                         pd |= icon_btn(ui, Ic::Preview, "Stampa… con anteprima (Ctrl+P)", cur_doc.is_some());
-                        if ui.add(Button::new(RichText::new("GRUPPO").size(12.0).strong()).min_size(Vec2::new(68.0, 28.0)))
-                            .on_hover_text("Stampa a gruppo: scegli pagine da più file e stampale insieme, anche 2 su 1").clicked() { grp = true; }
-                        if ui.add(Button::new(RichText::new(if self.thumb_panel { "PAGINE ✓" } else { "PAGINE" }).size(12.0).strong()).min_size(Vec2::new(68.0, 28.0)))
-                            .on_hover_text("Mostra o nasconde le mini anteprime delle pagine accanto al documento").clicked() { self.thumb_panel = !self.thumb_panel; }
                         ui.separator();
                         if icon_btn_a(ui, Ic::Pan, "Sposta la pagina con il mouse (H)", cur_doc.is_some(), self.pan) { self.pan = true; }
                         if icon_btn_a(ui, Ic::Sel, "Seleziona testo (T)", cur_doc.is_some(), !self.pan) { self.pan = false; }
@@ -1543,7 +1659,6 @@ impl eframe::App for App {
                                 if mi(ui, "Stampa…", "Ctrl+P", cur_doc.is_some()) { pd = true; }
                                 if mi(ui, "Stampa subito", "Ctrl+Maiusc+P", cur_doc.is_some()) { q = true; }
                                 if mi(ui, "STAMPA TUTTO", "", has_docs) { all = true; }
-                                if mi(ui, "Stampa a gruppo…", "", has_docs) { grp = true; }
                                 ui.menu_button("Stampante", |ui| {
                                     for p in &self.printers {
                                         if ui.selectable_label(self.st.printer == *p, p.as_str()).clicked() { self.st.printer = p.clone(); ui.close_menu(); }
@@ -1553,6 +1668,13 @@ impl eframe::App for App {
                                     for k in NUPS {
                                         if ui.selectable_label(self.st.nup == k, format!("{k} su 1")).clicked() { self.st.nup = k; ui.close_menu(); }
                                     }
+                                });
+                                ui.menu_button("Visualizzazione pagine", |ui| {
+                                    ui.set_min_width(250.0);
+                                    if ui.checkbox(&mut self.thumb_panel, "Mini anteprime sulla sinistra").changed() && self.thumb_panel { self.facing = false; }
+                                    if ui.checkbox(&mut self.facing, "Pagine affiancate (2 per volta)").changed() && self.facing { self.thumb_panel = false; }
+                                    ui.separator();
+                                    ui.label(RichText::new("La vista predefinita all'avvio si sceglie in Impostazioni.").weak().small());
                                 });
                                 ui.separator();
                                 if mi(ui, "Schermo intero", "F11", true) { fs_toggle = true; }
@@ -1636,7 +1758,7 @@ impl eframe::App for App {
         } else { self.sel = None; }
 
         // ---- mini anteprime delle pagine accanto al documento ----
-        if self.thumb_panel {
+        if self.thumb_panel && !self.facing {
             if let Tab::Doc(i) = self.tab { if i < self.docs.len() { self.thumbs_panel(ctx, i); } }
         }
 
@@ -1657,92 +1779,66 @@ impl eframe::App for App {
             Tab::Doc(i) => {
                 if i >= self.docs.len() { return; }
                 let (cur, zoom, fp) = (self.docs[i].cur, self.docs[i].zoom, self.docs[i].fitpage);
-                let (pw, ph) = self.docs[i].sizes[cur];
+                let n_pages = self.docs[i].sizes.len();
+                let pair = self.facing && cur + 1 < n_pages; // pagine affiancate: due per volta
+                let gap = 10.0;
                 let av = ui.available_size();
-                let base = if fp { (av.x - 16.0).min((av.y - 8.0) * pw / ph) } else { av.x - 16.0 };
-                let w = (base * zoom).max(50.0);
-                let h = w * ph / pw;
-                let sz = (w as i32, h as i32);
+                let mut dims: Vec<(usize, f32, f32)> = Vec::with_capacity(2);
+                for k in 0..if pair { 2 } else { 1 } {
+                    let p = cur + k;
+                    let (pw, ph) = self.docs[i].sizes[p];
+                    let maxw = if pair { ((av.x - gap - 18.0) / 2.0).max(60.0) } else { (av.x - 16.0).max(60.0) };
+                    let maxh = (av.y - 8.0).max(60.0);
+                    let base = if fp || pair { maxw.min(maxh * pw / ph) } else { maxw };
+                    let w = (base * zoom).max(50.0);
+                    dims.push((p, w, w * ph / pw));
+                }
+                let sz = (dims.iter().map(|d| d.1).sum::<f32>() as i32, dims.iter().map(|d| d.2).fold(0.0_f32, f32::max) as i32);
                 if sz != self.last_size { self.last_size = sz; self.last_change = Instant::now(); }
-                let bucket = (((w * ctx.pixels_per_point()) as i32).clamp(800, 3200) + 399) / 400 * 400;
-                if let Some(t) = self.get_tex(ctx, i, cur, bucket) {
-                    let empty: Vec<TCh> = Vec::new();
-                    let loaded = self.docs[i].text.contains_key(&cur);
-                    let chars = self.docs[i].text.get(&cur).unwrap_or(&empty);
-                    let ptext = self.docs[i].ptext.get(&cur);
-                    let sel = &mut self.sel;
-                    let pan = self.pan;
-                    let shit = self.search_hit;
-                    let q: Vec<char> = self.search.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
-                    // salto al risultato della ricerca: lo porta in vista
-                    let target_y = if self.jump { shit.filter(|(p, _)| *p == cur).and_then(|(_, st)| chars.get(st)).filter(|c| c.r[3] > c.r[1]).map(|c| ((ph - c.r[3]) / ph * h - 100.0).max(0.0)) } else { None };
-                    let mut sa = egui::ScrollArea::both().id_salt((i, cur)).auto_shrink([false; 2]).drag_to_scroll(pan);
-                    if let Some(y) = target_y { sa = sa.vertical_scroll_offset(y); }
-                    else if let Some(bottom) = self.scroll_reset.take() { sa = sa.vertical_scroll_offset(if bottom { 1.0e9 } else { 0.0 }); }
-                    let out = sa.show(ui, |ui| {
-                        ui.add_space(8.0);
-                        let img = egui::Image::new(egui::load::SizedTexture::new(t.id(), Vec2::new(w, h))).sense(if pan { egui::Sense::click() } else { egui::Sense::click_and_drag() });
-                        let resp = ui.vertical_centered(|ui| ui.add(img)).inner;
-                        let to_pt = |p: egui::Pos2| ((p.x - resp.rect.min.x) / w * pw, ph - (p.y - resp.rect.min.y) / h * ph);
-                        let rect_of = |c: &TCh| egui::Rect::from_min_max(
-                            egui::pos2(resp.rect.min.x + c.r[0] / pw * w, resp.rect.min.y + (ph - c.r[3]) / ph * h),
-                            egui::pos2(resp.rect.min.x + c.r[2] / pw * w, resp.rect.min.y + (ph - c.r[1]) / ph * h));
-                        if resp.hovered() {
-                            if pan { ctx.set_cursor_icon(if ui.input(|i| i.pointer.primary_down()) { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab }); }
-                            else if !loaded || !chars.is_empty() { ctx.set_cursor_icon(egui::CursorIcon::Text); }
-                        }
-                        if !pan {
-                            if resp.drag_started() {
-                                if loaded && chars.is_empty() { no_text = true; }
-                                *sel = resp.interact_pointer_pos().and_then(|p| { let (x, y) = to_pt(p); hit(chars, x, y) }).map(|k| Sel { doc: i, page: cur, a: k, b: k });
-                            } else if resp.dragged() {
-                                if let (Some(p), Some(s)) = (resp.interact_pointer_pos(), sel.as_mut()) {
-                                    let (x, y) = to_pt(p);
-                                    if let Some(k) = hit(chars, x, y) { s.b = k; }
-                                }
-                            } else if resp.clicked() { *sel = None; }
-                        }
-                        // risultati della ricerca (giallo; quello corrente arancione)
-                        if let (false, Some(tx)) = (q.is_empty(), ptext) {
-                            let cur_hit = shit.filter(|(p, _)| *p == cur).map(|(_, st)| st);
-                            for st in find_all(tx, &q) {
-                                let col = if Some(st) == cur_hit { Color32::from_rgba_unmultiplied(255, 140, 0, 150) } else { Color32::from_rgba_unmultiplied(255, 214, 0, 110) };
-                                for c in chars.iter().skip(st).take(q.len()) { if c.r[2] - c.r[0] >= 0.01 { ui.painter().rect_filled(rect_of(c), 0.0, col); } }
-                            }
-                        }
-                        // testo selezionato
-                        if let Some(s) = sel.as_ref() {
-                            let (lo, hi) = (s.a.min(s.b), s.a.max(s.b));
-                            for c in chars.iter().skip(lo).take(hi + 1 - lo) { if c.r[2] - c.r[0] >= 0.01 { ui.painter().rect_filled(rect_of(c), 0.0, Color32::from_rgba_unmultiplied(51, 144, 255, 90)); } }
-                        }
-                        resp.context_menu(|ui| {
-                            if ui.button("Copia").clicked() { copy_req = true; ui.close_menu(); }
-                            if ui.button("Seleziona tutto").clicked() {
-                                let mut it = chars.iter().enumerate().filter(|(_, c)| c.r[2] - c.r[0] > 0.01 && c.r[3] - c.r[1] > 0.01).map(|(k, _)| k);
-                                if let Some(a) = it.next() { let b = it.last().unwrap_or(a); *sel = Some(Sel { doc: i, page: cur, a, b }); }
-                                ui.close_menu();
+                // salto al risultato della ricerca: porta in vista il punto trovato (nella vista affiancata cambia gia' pagina)
+                let target_y = if self.jump && !pair {
+                    let (ph, h) = (self.docs[i].sizes[cur].1, dims[0].2);
+                    self.docs[i].text.get(&cur).and_then(|c| self.search_hit.filter(|(p, _)| *p == cur).and_then(|(_, st)| c.get(st)).filter(|c| c.r[3] > c.r[1]).map(|c| ((ph - c.r[3]) / ph * h - 100.0).max(0.0)))
+                } else { None };
+                let mut sa = egui::ScrollArea::both().id_salt((i, cur, pair)).auto_shrink([false; 2]).drag_to_scroll(self.pan);
+                if let Some(y) = target_y { sa = sa.vertical_scroll_offset(y); }
+                else if let Some(bottom) = self.scroll_reset.take() { sa = sa.vertical_scroll_offset(if bottom { 1.0e9 } else { 0.0 }); }
+                let out = sa.show(ui, |ui| {
+                    ui.add_space(8.0);
+                    if pair {
+                        let total = dims[0].1 + gap + dims[1].1;
+                        ui.horizontal(|ui| {
+                            ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
+                            for (k, &(p, w, h)) in dims.iter().enumerate() {
+                                if k > 0 { ui.add_space(gap); }
+                                let (n, c) = self.page_view(ui, ctx, i, p, w, h, false);
+                                no_text |= n; copy_req |= c;
                             }
                         });
-                    });
-                    if target_y.is_some() { self.jump = false; }
-                    // scorrendo oltre il fondo (o l'inizio) della pagina con rotella, touchpad o mano si passa alla pagina successiva (o precedente)
-                    let max_off = (out.content_size.y - out.inner_rect.height()).max(0.0);
-                    let dy = ctx.input(|i| i.raw_scroll_delta.y + if pan && i.pointer.primary_down() { i.pointer.delta().y } else { 0.0 });
-                    if dy != 0.0 {
-                        if self.over_at.elapsed() > Duration::from_millis(450) { self.over_acc = 0.0; }
-                        self.over_at = Instant::now();
-                        if dy < 0.0 && self.edge.1 { self.over_acc += -dy; }
-                        else if dy > 0.0 && self.edge.0 { self.over_acc -= dy; }
-                        else { self.over_acc = 0.0; }
+                    } else {
+                        let (p, w, h) = dims[0];
+                        let (n, c) = self.page_view(ui, ctx, i, p, w, h, true);
+                        no_text |= n; copy_req |= c;
                     }
-                    self.edge = (out.state.offset.y <= 0.5, out.state.offset.y >= max_off - 0.5);
-                    let n_pages = self.docs[i].sizes.len();
-                    if self.over_acc >= 140.0 && cur + 1 < n_pages {
-                        self.docs[i].cur = cur + 1; self.over_acc = 0.0; self.edge = (true, false); ctx.request_repaint();
-                    } else if self.over_acc <= -140.0 && cur > 0 {
-                        self.docs[i].cur = cur - 1; self.over_acc = 0.0; self.edge = (false, true); self.scroll_reset = Some(true); ctx.request_repaint();
-                    } else if self.over_acc.abs() >= 140.0 { self.over_acc = 0.0; }
+                });
+                if target_y.is_some() { self.jump = false; }
+                // scorrendo oltre il fondo (o l'inizio) della pagina con rotella, touchpad o mano si passa alla pagina successiva (o precedente)
+                let step = if self.facing { 2 } else { 1 };
+                let max_off = (out.content_size.y - out.inner_rect.height()).max(0.0);
+                let dy = ctx.input(|i| i.raw_scroll_delta.y + if self.pan && i.pointer.primary_down() { i.pointer.delta().y } else { 0.0 });
+                if dy != 0.0 {
+                    if self.over_at.elapsed() > Duration::from_millis(450) { self.over_acc = 0.0; }
+                    self.over_at = Instant::now();
+                    if dy < 0.0 && self.edge.1 { self.over_acc += -dy; }
+                    else if dy > 0.0 && self.edge.0 { self.over_acc -= dy; }
+                    else { self.over_acc = 0.0; }
                 }
+                self.edge = (out.state.offset.y <= 0.5, out.state.offset.y >= max_off - 0.5);
+                if self.over_acc >= 140.0 && cur + step < n_pages {
+                    self.docs[i].cur = cur + step; self.over_acc = 0.0; self.edge = (true, false); ctx.request_repaint();
+                } else if self.over_acc <= -140.0 && cur > 0 {
+                    self.docs[i].cur = cur.saturating_sub(step); self.over_acc = 0.0; self.edge = (false, true); self.scroll_reset = Some(true); ctx.request_repaint();
+                } else if self.over_acc.abs() >= 140.0 { self.over_acc = 0.0; }
             }
         });
 
@@ -1755,14 +1851,15 @@ impl eframe::App for App {
         }
 
         // ---- comandi pagina/zoom: barra fluttuante in basso (non toglie spazio al documento) ----
+        let kstep = if self.facing { 2 } else { 1 };
         if let Tab::Doc(i) = self.tab {
             if let Some(d) = self.docs.get_mut(i) {
                 egui::Area::new(egui::Id::new("nav")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -14.0]).show(ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            if ui.button("<").clicked() && d.cur > 0 { d.cur -= 1; }
+                            if ui.button("<").clicked() && d.cur > 0 { d.cur = d.cur.saturating_sub(kstep); }
                             ui.label(format!("{} / {}", d.cur + 1, d.sizes.len()));
-                            if ui.button(">").clicked() && d.cur + 1 < d.sizes.len() { d.cur += 1; }
+                            if ui.button(">").clicked() && d.cur + kstep < d.sizes.len() { d.cur += kstep; }
                             ui.separator();
                             if ui.button("-").clicked() { d.zoom = (d.zoom - 0.1).max(0.3); }
                             ui.label(format!("{:.0}%", d.zoom * 100.0));
@@ -1810,7 +1907,6 @@ impl eframe::App for App {
             if q { self.print_one(i); }
         }
         if all { self.print_all(); }
-        if grp { if !self.docs.is_empty() { self.grp_use = true; self.show_pall = true; } }
         // ---- stampa in corso: cerchio di caricamento finche' il lavoro non e' in coda nella stampante ----
         let mut cancel_print = false;
         if let Some(t) = &self.task {
@@ -1888,6 +1984,8 @@ impl eframe::App for App {
         // contorno nero attorno alla finestra (la finestra non ha la cornice di Windows)
         ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("window_outline")))
             .rect_stroke(ctx.screen_rect().shrink(0.75), 0.0, egui::Stroke::new(1.5_f32, Color32::from_gray(75)));
+        // la vista delle pagine scelta dal menu File resta memorizzata (serve con "Come al precedente avvio")
+        if self.st.thumb_on != self.thumb_panel || self.st.facing != self.facing { self.st.thumb_on = self.thumb_panel; self.st.facing = self.facing; }
         if self.st != before { self.st.save(); } // stampante / "N su 1" scelti nella barra restano per "Stampa subito"
     }
 }
