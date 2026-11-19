@@ -24,7 +24,7 @@ enum PageSel { All, Current, Custom }
 enum ScaleMode { Fit, Actual, Custom }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
-enum ColorMode { Color, Gray, Bw }
+enum ColorMode { Color, #[serde(alias = "Gray")] Auto, Bw }
 
 /// Impostazioni di stampa all'avvio: ultime usate oppure quelle scelte dall'utente.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
@@ -337,7 +337,7 @@ fn tone(buf: &mut [u8], st: &Settings) {
         let lum = ((0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32) as usize).min(255);
         match st.color {
             ColorMode::Color => { p[0] = lut[p[0] as usize]; p[1] = lut[p[1] as usize]; p[2] = lut[p[2] as usize]; }
-            ColorMode::Gray => { let l = lut[lum]; p[0] = l; p[1] = l; p[2] = l; }
+            ColorMode::Auto => { p[0] = lut[p[0] as usize]; p[1] = lut[p[1] as usize]; p[2] = lut[p[2] as usize]; }
             ColorMode::Bw => { let v = if lut[lum] >= 128 { 255 } else { 0 }; p[0] = v; p[1] = v; p[2] = v; }
         }
     }
@@ -1095,7 +1095,7 @@ impl App {
         let fogli: usize = self.docs.iter().map(|d| sheets_for(&self.st, d.id, &(0..d.sizes.len()).collect::<Vec<_>>()).len()).sum(); // fogli per copia
         let tot = fogli * c as usize;
         let warn = c > 1 && self.st.ask_copies;
-        let colore = match self.st.color { ColorMode::Color => "COLORI", ColorMode::Gray => "SCALA DI GRIGI", ColorMode::Bw => "BIANCO E NERO" };
+        let colore = match self.st.color { ColorMode::Color => "COLORI", ColorMode::Auto => "AUTOMATICO", ColorMode::Bw => "BIANCO E NERO" };
         let stampante = self.st.printer.to_uppercase();
         egui::Window::new("STAMPA TUTTO").open(&mut open).collapsible(false).resizable(true).default_size(Vec2::new(880.0, 600.0)).min_width(760.0).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
             ui.set_min_width(840.0);
@@ -1234,7 +1234,7 @@ impl App {
                         ui.horizontal(|ui| {
                             ui.label("Colore:");
                             ui.radio_value(&mut self.cfg.mine.color, ColorMode::Color, "Colori");
-                            ui.radio_value(&mut self.cfg.mine.color, ColorMode::Gray, "Scala di grigi");
+                            ui.radio_value(&mut self.cfg.mine.color, ColorMode::Auto, "Automatico");
                             ui.radio_value(&mut self.cfg.mine.color, ColorMode::Bw, "Bianco e nero");
                         });
                         ui.horizontal(|ui| {
@@ -1433,7 +1433,7 @@ impl App {
                             ui.label(RichText::new("Colore, luminosità e contrasto").strong().color(ACCENT));
                             ui.horizontal_wrapped(|ui| {
                                 ui.radio_value(&mut self.draft.color, ColorMode::Color, "Colori");
-                                ui.radio_value(&mut self.draft.color, ColorMode::Gray, "Scala di grigi");
+                                ui.radio_value(&mut self.draft.color, ColorMode::Auto, "Automatico");
                                 ui.radio_value(&mut self.draft.color, ColorMode::Bw, "Bianco e nero");
                             });
                             ui.horizontal(|ui| {
