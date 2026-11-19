@@ -89,3 +89,10 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           files: dist/*.exe
           fail_on_unmatched_files: true
+
+      - name: Allinea il tag al commit pubblicato
+        if: env.RELEASE_TAG != '' && github.ref_type == 'branch'
+        shell: bash
+        run: |
+          git tag -f "$RELEASE_TAG" "$GITHUB_SHA"
+          git push -f origin "refs/tags/$RELEASE_TAG"
