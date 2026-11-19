@@ -7,16 +7,16 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Tag della release a cui allegare l'installer (es. 2.6). Lascia vuoto per non allegare."
+        description: "Tag della release a cui allegare l'installer (es. 3.3). Lascia vuoto per non allegare."
         required: false
-        default: "2.6"
+        default: "3.3"
 
 permissions:
   contents: write
 
 env:
   PDFIUM_URL: https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-win-x64.tgz
-  APP_VER: "2.6"
+  APP_VER: "3.3"
 
 jobs:
   build:

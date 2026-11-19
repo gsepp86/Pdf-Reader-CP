@@ -1,4 +1,4 @@
-// PDF Reader CP 2.6 - Programma opensource progettato da Peppe CP con l'aiuto della IA.
+// PDF Reader CP 3.3 - Programma opensource progettato da Peppe CP con l'aiuto della IA.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use eframe::egui::{self, Button, Color32, RichText, Vec2};
 use pdfium_render::prelude::*;
@@ -13,7 +13,7 @@ const A4: (f32, f32) = (595.0, 842.0); // punti (1/72")
 const ICON: &[u8] = include_bytes!("../assets/icon.png");
 const DONATE_URL: &str = "https://paypal.me/PeppeCP";
 const GITHUB_URL: &str = "https://github.com/gsepp86/Pdf-Reader-CP";
-const VERSION: &str = "2.6";
+const VERSION: &str = "3.3";
 const NUPS: [u32; 6] = [1, 2, 4, 6, 9, 16]; // pagine per foglio
 
 // ---------- impostazioni di stampa (salvate: servono a "Stampa subito") ----------
@@ -109,20 +109,25 @@ fn pages_for(st: &Settings, cur: usize, n: usize) -> Vec<usize> {
     }
 }
 
-/// Un foglio da stampare: le pagine che ci vanno sopra e, in modalita' poster, il riquadro della pagina.
+/// Un foglio da stampare: le pagine (documento + indice) che ci vanno sopra e, in modalita' poster, il riquadro.
 #[derive(Clone)]
-struct Sheet { pages: Vec<usize>, tile: Option<(u32, u32)> }
+struct Sheet { items: Vec<(u64, usize)>, tile: Option<(u32, u32)> }
 
-/// Divide le pagine in fogli (N su 1) oppure nei riquadri di un poster (una pagina su piu' fogli).
-fn sheets_for(st: &Settings, pages: &[usize]) -> Vec<Sheet> {
+/// Divide le pagine di un documento in fogli (N su 1) oppure nei riquadri di un poster.
+fn sheets_for(st: &Settings, doc: u64, pages: &[usize]) -> Vec<Sheet> {
+    sheets_for_items(st, &pages.iter().map(|&p| (doc, p)).collect::<Vec<_>>())
+}
+
+/// Divide un elenco di pagine (anche di documenti diversi) in fogli: cosi' il 2 su 1 puo' unire file diversi.
+fn sheets_for_items(st: &Settings, items: &[(u64, usize)]) -> Vec<Sheet> {
     let g = st.poster;
     if g >= 2 {
-        let mut v = Vec::with_capacity(pages.len() * (g * g) as usize);
-        for &p in pages { for r in 0..g { for c in 0..g { v.push(Sheet { pages: vec![p], tile: Some((r, c)) }); } } }
+        let mut v = Vec::with_capacity(items.len() * (g * g) as usize);
+        for &(id, p) in items { for r in 0..g { for c in 0..g { v.push(Sheet { items: vec![(id, p)], tile: Some((r, c)) }); } } }
         v
     } else {
         let nup = st.nup.max(1) as usize;
-        pages.chunks(nup).map(|c| Sheet { pages: c.to_vec(), tile: None }).collect()
+        items.chunks(nup).map(|c| Sheet { items: c.to_vec(), tile: None }).collect()
     }
 }
 
@@ -194,9 +199,11 @@ fn outline(dst: &mut [u8], dw: usize, dh: usize, x: i32, y: i32, w: usize, h: us
 
 /// Compone UN foglio (1, 2, 4, 6, 9 o 16 pagine) su carta `pap` (punti). Usata sia per l'anteprima sia per la stampa.
 /// `ppp` = pixel per punto. Restituisce RGBA gia' ruotato come la carta fisica.
-fn compose(_pdfium: &Pdfium, d: &Doc, pages: &[usize], pap: (f32, f32), st: &Settings, ppp: f32, apply_tone: bool, tile: Option<(u32, u32)>) -> Option<(usize, usize, Vec<u8>)> {
+fn compose(_pdfium: &Pdfium, docs: &[Doc], items: &[(u64, usize)], pap: (f32, f32), st: &Settings, ppp: f32, apply_tone: bool, tile: Option<(u32, u32)>) -> Option<(usize, usize, Vec<u8>)> {
     let n = if st.poster >= 2 { 1 } else { st.nup.max(1) as usize };
-    let (pw0, ph0) = d.sizes[*pages.first()?];
+    let (id0, p0) = *items.first()?;
+    let d0 = docs.iter().find(|d| d.id == id0)?;
+    let (pw0, ph0) = d0.sizes[p0];
     let land = pw0 > ph0;
     let pg = match n { 2 => (1, 2), 4 => (2, 2), 6 => (2, 3), 9 => (3, 3), 16 => (4, 4), _ => (1, 1) }; // colonne x righe su foglio verticale
     // 2 su 1 / 6 su 1 con pagine verticali: foglio orizzontale (pagine affiancate)
@@ -206,12 +213,13 @@ fn compose(_pdfium: &Pdfium, d: &Doc, pages: &[usize], pap: (f32, f32), st: &Set
     let (sw, sh) = if sheet_land { (mx, mn) } else { (mn, mx) };
     let rot = sheet_land != (pap.0 > pap.1);
     // poster: questo foglio e' solo un riquadro ingrandito della pagina
-    if let Some(t) = tile { return compose_poster(d, *pages.first()?, (sw, sh), rot, st, ppp, apply_tone, t); }
+    if let Some(t) = tile { return compose_poster(d0, p0, (sw, sh), rot, st, ppp, apply_tone, t); }
     let (bw, bh) = (((sw * ppp) as usize).max(1), ((sh * ppp) as usize).max(1));
     let mut buf = vec![255u8; bw * bh * 4];
     let (cw, ch) = (sw / cols as f32, sh / rows as f32);
     let m = if n > 1 { 6.0 } else { 0.0 };
-    for (i, &p) in pages.iter().enumerate() {
+    for (i, &(id, p)) in items.iter().enumerate() {
+        let Some(d) = docs.iter().find(|d| d.id == id) else { continue };
         let (pw, ph) = d.sizes[p];
         let (aw, ah) = (cw - 2.0 * m, ch - 2.0 * m);
         let fit = (aw / pw).min(ah / ph);
@@ -425,6 +433,52 @@ mod spool {
         }
     }
 
+    /// Preferenze predefinite del driver lette dal DEVMODE: colore, fronte/retro, orientamento, copie.
+    #[derive(Clone, Copy, Default)]
+    pub struct DriverPrefs { pub mono: bool, pub duplex: bool, pub landscape: bool, pub copies: u32 }
+
+    unsafe fn parse_devmode(dm: *const DEVMODEW) -> DriverPrefs {
+        let d = &*dm;
+        let mut p = DriverPrefs { copies: 1, ..Default::default() };
+        let f = d.dmFields.0;
+        if f & 0x0800 != 0 { p.mono = d.dmColor.0 == 2; }                     // DM_COLOR, DMCOLOR_MONOCHROME
+        if f & 0x1000 != 0 { p.duplex = d.dmDuplex.0 != 1; }                   // DM_DUPLEX, DMDUP_SIMPLEX
+        if f & 0x0001 != 0 { p.landscape = d.Anonymous1.Anonymous1.dmOrientation == 2; } // DM_ORIENTATION, DMORIENT_LANDSCAPE
+        if f & 0x0100 != 0 && d.Anonymous1.Anonymous1.dmCopies > 0 { p.copies = d.Anonymous1.Anonymous1.dmCopies as u32; } // DM_COPIES
+        p
+    }
+
+    /// Legge le preferenze del driver: quelle salvate nel DEVMODE indicato oppure quelle predefinite della stampante.
+    pub fn driver_prefs(printer: &str, devmode: Option<&[u8]>) -> Option<DriverPrefs> {
+        unsafe {
+            const DM_OUT_BUFFER: u32 = 2;
+            let name: Vec<u16> = printer.encode_utf16().chain([0]).collect();
+            let pn = PCWSTR(name.as_ptr());
+            let mut h = HANDLE::default();
+            OpenPrinterW(pn, &mut h, None).ok()?;
+            let mut out = None;
+            match devmode {
+                Some(d) if d.len() >= std::mem::size_of::<DEVMODEW>() => {
+                    let mut buf = vec![0u64; (d.len() + 7) / 8];
+                    std::ptr::copy_nonoverlapping(d.as_ptr(), buf.as_mut_ptr() as *mut u8, d.len());
+                    out = Some(parse_devmode(buf.as_ptr() as *const DEVMODEW));
+                }
+                _ => {
+                    let size = DocumentPropertiesW(GetForegroundWindow(), h, pn, None, None, 0);
+                    if size > 0 {
+                        let mut buf = vec![0u64; (size as usize + 7) / 8];
+                        let dm = buf.as_mut_ptr() as *mut DEVMODEW;
+                        if DocumentPropertiesW(GetForegroundWindow(), h, pn, Some(dm), None, DM_OUT_BUFFER) == 1 {
+                            out = Some(parse_devmode(dm as *const DEVMODEW));
+                        }
+                    }
+                }
+            }
+            let _ = ClosePrinter(h);
+            out
+        }
+    }
+
     /// Dimensione fisica della carta (punti) con le impostazioni correnti del driver.
     pub fn paper_pts(printer: &str, devmode: Option<&[u8]>) -> Option<(f32, f32)> {
         unsafe {
@@ -480,6 +534,9 @@ mod spool {
     }
     pub fn driver_dialog(_: &str, _: Option<&[u8]>) -> Option<Vec<u8>> { None }
     pub fn paper_pts(_: &str, _: Option<&[u8]>) -> Option<(f32, f32)> { None }
+    #[derive(Clone, Copy, Default)]
+    pub struct DriverPrefs { pub mono: bool, pub duplex: bool, pub landscape: bool, pub copies: u32 }
+    pub fn driver_prefs(_: &str, _: Option<&[u8]>) -> Option<DriverPrefs> { None }
 }
 
 // ---------- applicazione ----------
@@ -495,7 +552,7 @@ struct Sel { doc: usize, page: usize, a: usize, b: usize }
 
 /// Lavoro di stampa in corso: procede un passo (un foglio) per volta cosi' l'interfaccia resta viva e mostra il cerchio di caricamento.
 struct PrintTask {
-    ids: Vec<u64>, st: Settings, di: usize, job: Option<spool::Job>,
+    ids: Vec<u64>, items: Vec<(u64, usize)>, group: bool, st: Settings, di: usize, job: Option<spool::Job>,
     sheets: Vec<Sheet>, order: Vec<usize>, pos: usize, area: (f32, f32, f32),
     last: Option<(usize, usize, usize, Vec<u8>)>, total: usize, done: usize, cancel: bool,
 }
@@ -519,6 +576,8 @@ struct App {
     task: Option<PrintTask>, tab_drag: Option<usize>, next_id: u64,
     pwd_req: Option<PwdReq>, pwd_queue: Vec<PathBuf>,
     upd: Upd, upd_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    drv_key: String, drv_info: Option<spool::DriverPrefs>,
+    grp_use: bool, grp_pages: Vec<(u64, String)>, pall_thumbs: HashMap<(u64, usize), egui::TextureHandle>,
 }
 
 impl App {
@@ -546,7 +605,7 @@ impl App {
         detect_byte_order(pdfium);
         let start_pan = st.start_pan;
         let ipc = listener.map(|l| { let (tx, rx) = std::sync::mpsc::channel(); serve(l, tx, cc.egui_ctx.clone()); rx });
-        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: None, tab_drag: None, next_id: 1, pwd_req: None, pwd_queue: vec![], upd: Upd::None, upd_rx: None };
+        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: None, tab_drag: None, next_id: 1, pwd_req: None, pwd_queue: vec![], upd: Upd::None, upd_rx: None, drv_key: String::new(), drv_info: None, grp_use: false, grp_pages: vec![], pall_thumbs: HashMap::new() };
         for a in init { app.open(a); }
         app
     }
@@ -711,8 +770,50 @@ impl App {
         if ids.is_empty() { return; }
         let c = st.copies.max(1) as usize;
         let total: usize = ids.iter().filter_map(|id| self.docs.iter().find(|d| d.id == *id))
-            .map(|d| sheets_for(&st, &pages_for(&st, d.cur, d.sizes.len())).len() * c).sum();
-        self.task = Some(PrintTask { ids, st, di: 0, job: None, sheets: vec![], order: vec![], pos: 0, area: (595.0, 842.0, 72.0), last: None, total, done: 0, cancel: false });
+            .map(|d| sheets_for(&st, d.id, &pages_for(&st, d.cur, d.sizes.len())).len() * c).sum();
+        self.task = Some(PrintTask { ids, items: vec![], group: false, st, di: 0, job: None, sheets: vec![], order: vec![], pos: 0, area: (595.0, 842.0, 72.0), last: None, total, done: 0, cancel: false });
+    }
+
+    /// STAMPA A GRUPPO: le pagine scelte (anche da file diversi) vanno in un unico lavoro e vengono impaginate
+    /// insieme, cosi' il 2 su 1 puo' affiancare per esempio pagina 1 del primo file e pagina 3 del secondo.
+    fn print_group(&mut self, items: Vec<(u64, usize)>) {
+        if self.task.is_some() { self.toast("Stampa gia' in corso".into()); return; }
+        if self.st.printer.is_empty() { err("Nessuna stampante selezionata"); return; }
+        if items.is_empty() { err("Nessuna pagina scelta per la stampa a gruppo".into()); return; }
+        let st = self.st.clone();
+        let sheets = sheets_for_items(&st, &items);
+        if sheets.is_empty() { return; }
+        let total = sheets.len() * st.copies.max(1) as usize;
+        self.task = Some(PrintTask { ids: vec![], items, group: true, st, di: 0, job: None, sheets: vec![], order: vec![], pos: 0, area: (595.0, 842.0, 72.0), last: None, total, done: 0, cancel: false });
+    }
+
+    /// Elenco delle pagine scelte per la stampa a gruppo (documento + pagina, nell'ordine delle schede).
+    fn group_items(&self) -> Vec<(u64, usize)> {
+        let mut v = Vec::new();
+        for (id, spec) in &self.grp_pages {
+            let Some(d) = self.docs.iter().find(|d| d.id == *id) else { continue };
+            let mut tmp = self.st.clone();
+            tmp.sel = PageSel::Custom;
+            tmp.custom = spec.clone();
+            for p in pages_for(&tmp, d.cur, d.sizes.len()) { v.push((*id, p)); }
+        }
+        v
+    }
+
+    /// Compone e invia un foglio del lavoro (con cache dell'ultimo foglio reso).
+    fn send_sheet(&self, t: &mut PrintTask, s: usize) -> Result<(), String> {
+        if t.last.as_ref().map(|l| l.0) != Some(s) {
+            let (aw, ah, _) = t.area;
+            let (w, h, mut b) = compose(&self.pdfium, &self.docs, &t.sheets[s].items, (aw, ah), &t.st, 300.0 / 72.0, true, t.sheets[s].tile).ok_or("Rendering della pagina non riuscito")?;
+            for q in b.chunks_exact_mut(4) { q.swap(0, 2); } // RGBA -> BGRA per GDI
+            t.last = Some((s, w, h, b));
+        }
+        if let (Some(l), Some(job)) = (t.last.as_ref(), t.job.as_ref()) {
+            let (aw, ah, dpi) = t.area;
+            let f = dpi / 72.0;
+            job.page(&l.3, l.1 as i32, l.2 as i32, 0, 0, (aw * f) as i32, (ah * f) as i32);
+        }
+        Ok(())
     }
 
     /// Un passo del lavoro di stampa. Quando finisce, il lavoro e' in coda nella stampante e il cerchio di caricamento sparisce.
@@ -725,19 +826,44 @@ impl App {
         }
         match self.advance(&mut t) {
             Ok(true) => { self.task = Some(t); ctx.request_repaint(); }
-            Ok(false) => { let (p, n) = (t.st.printer.clone(), t.ids.len()); self.toast(format!("Lavoro inviato a «{p}» ({n} schede in coda)")); }
+            Ok(false) => {
+                let p = t.st.printer.clone();
+                let cosa = if t.group { format!("{} fogli in coda", t.sheets.len()) } else { format!("{} schede in coda", t.ids.len()) };
+                self.toast(format!("Lavoro inviato a «{p}» ({cosa})"));
+            }
             Err(e) => { if let Some(j) = t.job.as_mut() { j.abort(); } err(&e); }
         }
     }
 
     /// Esegue un'unita' di lavoro: apre il lavoro di una scheda, oppure invia un foglio, oppure chiude il lavoro (che va in coda).
     fn advance(&self, t: &mut PrintTask) -> Result<bool, String> {
+        if t.group { // stampa a gruppo: un solo lavoro con le pagine scelte da piu' file
+            if t.job.is_none() {
+                if t.pos >= t.order.len() && t.pos > 0 { return Ok(false); }
+                let sheets = sheets_for_items(&t.st, &t.items);
+                if sheets.is_empty() { return Err("Nessuna pagina da stampare".into()); }
+                let (c, ns) = (t.st.copies.max(1) as usize, sheets.len());
+                t.sheets = sheets;
+                t.order = if t.st.collate { (0..c).flat_map(|_| 0..ns).collect() } else { (0..ns).flat_map(|s| std::iter::repeat(s).take(c)).collect() };
+                let dm: Option<Vec<u8>> = if t.st.drv_printer == t.st.printer && !t.st.drv_mode.is_empty() { Some(from_hex(&t.st.drv_mode)) } else { None };
+                let job = spool::Job::new(&t.st.printer, "PDF Reader CP - gruppo", dm.as_deref()).or_else(|e| if dm.is_some() { spool::Job::new(&t.st.printer, "PDF Reader CP - gruppo", None) } else { Err(e) })?;
+                t.area = job.area(); t.pos = 0; t.last = None; t.job = Some(job);
+                return Ok(true);
+            }
+            if t.pos < t.order.len() {
+                self.send_sheet(t, t.order[t.pos])?;
+                t.pos += 1; t.done += 1;
+                return Ok(true);
+            }
+            t.job = None;
+            return Ok(false);
+        }
         if t.job.is_none() { // apri la scheda successiva
             if t.di >= t.ids.len() { return Ok(false); }
             let Some(d) = self.docs.iter().find(|d| d.id == t.ids[t.di]) else { t.di += 1; return Ok(true); }; // scheda chiusa nel frattempo
             let pages = pages_for(&t.st, d.cur, d.sizes.len());
             if pages.is_empty() { return Err(format!("Nessuna pagina da stampare in {}", d.name)); }
-            t.sheets = sheets_for(&t.st, &pages);
+            t.sheets = sheets_for(&t.st, d.id, &pages);
             let (c, ns) = (t.st.copies.max(1) as usize, t.sheets.len());
             t.order = if t.st.collate { (0..c).flat_map(|_| 0..ns).collect() } else { (0..ns).flat_map(|s| std::iter::repeat(s).take(c)).collect() };
             let dm: Option<Vec<u8>> = if t.st.drv_printer == t.st.printer && !t.st.drv_mode.is_empty() { Some(from_hex(&t.st.drv_mode)) } else { None };
@@ -746,22 +872,11 @@ impl App {
             return Ok(true);
         }
         if t.pos < t.order.len() { // invia un foglio
-            let Some(d) = self.docs.iter().find(|d| d.id == t.ids[t.di]) else {
+            if !self.docs.iter().any(|d| d.id == t.ids[t.di]) { // scheda chiusa nel frattempo
                 if let Some(j) = t.job.as_mut() { j.abort(); }
                 t.job = None; t.di += 1; return Ok(true);
-            };
-            let s = t.order[t.pos];
-            if t.last.as_ref().map(|l| l.0) != Some(s) {
-                let (aw, ah, _) = t.area;
-                let (w, h, mut b) = compose(&self.pdfium, d, &t.sheets[s].pages, (aw, ah), &t.st, 300.0 / 72.0, true, t.sheets[s].tile).ok_or("Rendering della pagina non riuscito")?;
-                for q in b.chunks_exact_mut(4) { q.swap(0, 2); } // RGBA -> BGRA per GDI
-                t.last = Some((s, w, h, b));
             }
-            if let (Some(l), Some(job)) = (t.last.as_ref(), t.job.as_ref()) {
-                let (aw, ah, dpi) = t.area;
-                let f = dpi / 72.0;
-                job.page(&l.3, l.1 as i32, l.2 as i32, 0, 0, (aw * f) as i32, (ah * f) as i32);
-            }
+            self.send_sheet(t, t.order[t.pos])?;
             t.pos += 1; t.done += 1;
             return Ok(true);
         }
@@ -775,43 +890,131 @@ impl App {
         if !self.docs.is_empty() { self.show_pall = true; }
     }
 
-    /// Richiesta di STAMPA TUTTO: stampare con le impostazioni attuali (STAMPA), cambiarle al volo (CAMBIA) o annullare.
+    /// Richiesta di STAMPA TUTTO: riepilogo grande, anteprime a sinistra, scelta delle pagine da unire
+    /// in un gruppo (anche tra file diversi) e conferma.
     fn pall_window(&mut self, ctx: &egui::Context) {
         let n = self.docs.len();
         if n == 0 { self.show_pall = false; return; }
-        let (mut open, mut go, mut one, mut change, mut cancel) = (true, false, false, false, ctx.input(|i| i.key_pressed(egui::Key::Escape)));
+        // una riga per scheda: mantiene le pagine scelte e aggiunge le schede nuove (tutte le pagine)
+        let gp: Vec<(u64, String)> = self.docs.iter().map(|d| {
+            let spec = self.grp_pages.iter().find(|(id, _)| *id == d.id).map(|x| x.1.clone()).unwrap_or_else(|| format!("1-{}", d.sizes.len()));
+            (d.id, spec)
+        }).collect();
+        self.grp_pages = gp;
+        let (mut open, mut go, mut go_grp, mut one, mut change, mut cancel) = (true, false, false, false, false, ctx.input(|i| i.key_pressed(egui::Key::Escape)));
         let c = self.st.copies.max(1);
         let nup = self.st.nup.max(1) as usize;
         let pagine: usize = self.docs.iter().map(|d| d.sizes.len()).sum();
-        let fogli: usize = self.docs.iter().map(|d| sheets_for(&self.st, &(0..d.sizes.len()).collect::<Vec<_>>()).len()).sum(); // fogli per copia
+        let fogli: usize = self.docs.iter().map(|d| sheets_for(&self.st, d.id, &(0..d.sizes.len()).collect::<Vec<_>>()).len()).sum(); // fogli per copia
         let tot = fogli * c as usize;
+        let g_items = self.group_items();
+        let g_sheets = sheets_for_items(&self.st, &g_items).len();
+        let g_tot = g_sheets * c as usize;
         let warn = c > 1 && self.st.ask_copies;
         let colore = match self.st.color { ColorMode::Color => "COLORI", ColorMode::Gray => "SCALA DI GRIGI", ColorMode::Bw => "BIANCO E NERO" };
         let stampante = self.st.printer.to_uppercase();
-        egui::Window::new("STAMPA TUTTO").open(&mut open).collapsible(false).resizable(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
-            ui.set_min_width(440.0);
-            ui.label(RichText::new("STAMPARE CON LE IMPOSTAZIONI ATTUALI?").strong().size(18.0));
-            ui.add_space(6.0);
+        // anteprime: le pagine della selezione a gruppo oppure le prime pagine di ogni scheda
+        let mut prev_pages: Vec<(u64, usize)> = Vec::new();
+        if self.grp_use {
+            prev_pages.extend(g_items.iter().copied().take(24));
+        } else {
+            for d in &self.docs { for p in pages_for(&self.st, d.cur, d.sizes.len()).into_iter().take(8) { if prev_pages.len() < 24 { prev_pages.push((d.id, p)); } } }
+        }
+        self.pall_thumbs.retain(|(id, _), _| self.docs.iter().any(|d| d.id == *id));
+        for &(id, p) in &prev_pages {
+            if self.pall_thumbs.contains_key(&(id, p)) { continue; }
+            if let Some((w, h, b)) = self.docs.iter().find(|d| d.id == id).and_then(|d| render(&d.pdf, p, 100)) {
+                let t = ctx.load_texture("pall_thumb", egui::ColorImage::from_rgba_unmultiplied([w, h], &b), egui::TextureOptions::LINEAR);
+                self.pall_thumbs.insert((id, p), t);
+            }
+        }
+        let names: Vec<(String, usize)> = self.docs.iter().map(|d| (d.name.clone(), d.sizes.len())).collect();
+        egui::Window::new("STAMPA TUTTO").open(&mut open).collapsible(false).resizable(true).default_size(Vec2::new(880.0, 600.0)).min_width(760.0).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
+            ui.set_min_width(840.0);
+            {
+                let s = ui.style_mut();
+                s.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(15.5));
+                s.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.5));
+                s.spacing.button_padding = Vec2::new(12.0, 6.0);
+                s.spacing.interact_size.y = 28.0;
+            }
+            ui.label(RichText::new("STAMPARE CON LE IMPOSTAZIONI ATTUALI?").strong().size(20.0));
+            ui.add_space(4.0);
             if warn { ui.label(RichText::new(format!("ATTENZIONE: SONO IMPOSTATE {c} COPIE PER OGNI FILE.")).strong().color(ACCENT)); ui.add_space(4.0); }
-            ui.label(format!("SCHEDE APERTE: {n}"));
-            ui.label(format!("PAGINE PER COPIA: {pagine}"));
-            if self.st.poster >= 2 { ui.label(format!("FOGLI PER COPIA: {fogli} (POSTER {} × {} RIQUADRI)", self.st.poster, self.st.poster)); }
-            else { ui.label(format!("FOGLI PER COPIA: {fogli} ({nup} PAGINE PER FOGLIO)")); }
-            ui.label(format!("COPIE PER OGNI FILE: {c}"));
-            ui.label(RichText::new(format!("TOTALE FOGLI: {tot}")).strong());
-            ui.label(format!("STAMPANTE: {stampante}"));
-            ui.label(format!("COLORE: {colore}"));
-            ui.label(RichText::new("LE SCHEDE VENGONO STAMPATE NELL'ORDINE IN CUI SONO DISPOSTE").weak().small());
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if ui.add(Button::new(RichText::new("STAMPA").strong().size(16.0).color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(120.0, 38.0))).clicked() { go = true; }
-                if ui.add(Button::new(RichText::new("CAMBIA").size(16.0)).min_size(Vec2::new(110.0, 38.0))).on_hover_text("APRE LE IMPOSTAZIONI DI STAMPA").clicked() { change = true; }
-                if warn && ui.add(Button::new(RichText::new("1 COPIA PER FILE").size(16.0)).min_size(Vec2::new(150.0, 38.0))).on_hover_text("IMPOSTA 1 COPIA PER FILE E STAMPA").clicked() { one = true; }
-                if ui.add(Button::new(RichText::new("ANNULLA").size(16.0)).min_size(Vec2::new(110.0, 38.0))).clicked() { cancel = true; }
+            ui.horizontal_top(|ui| {
+                // ---- anteprime delle pagine a sinistra ----
+                ui.vertical(|ui| {
+                    ui.set_width(190.0);
+                    ui.label(RichText::new("ANTEPRIMA PAGINE").strong().small().color(ACCENT));
+                    egui::ScrollArea::vertical().max_height(430.0).auto_shrink([false, false]).show(ui, |ui| {
+                        for &(id, p) in &prev_pages {
+                            if let Some(t) = self.pall_thumbs.get(&(id, p)).cloned() {
+                                let sz = t.size_vec2();
+                                let w = 76.0_f32;
+                                ui.image(egui::load::SizedTexture::new(t.id(), Vec2::new(w, (w * sz.y / sz.x.max(1.0)).min(108.0))));
+                                ui.label(RichText::new(format!("pag. {}", p + 1)).weak().small());
+                            }
+                        }
+                        if prev_pages.is_empty() { ui.label(RichText::new("Nessuna pagina selezionata").weak()); }
+                    });
+                });
+                ui.separator();
+                // ---- riepilogo, totale ben visibile e gruppo di pagine ----
+                ui.vertical(|ui| {
+                    ui.label(format!("SCHEDE APERTE: {n}"));
+                    ui.label(format!("PAGINE TOTALI (TUTTE LE SCHEDE): {pagine}"));
+                    if self.st.poster >= 2 { ui.label(format!("FOGLI PER COPIA: {fogli} (POSTER {} × {} RIQUADRI)", self.st.poster, self.st.poster)); }
+                    else { ui.label(format!("FOGLI PER COPIA: {fogli} ({nup} PAGINE PER FOGLIO)")); }
+                    ui.label(format!("COPIE PER OGNI FILE: {c}"));
+                    ui.label(RichText::new(format!("TOTALE FOGLI DA STAMPARE: {tot}")).strong().size(18.0).color(ACCENT));
+                    ui.label(format!("STAMPANTE: {stampante}"));
+                    ui.label(format!("COLORE: {colore}"));
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        let two = self.st.nup == 2 && self.st.poster < 2;
+                        if ui.add(Button::new(RichText::new(if two { "AFFIANCATE (2 SU 1) ✓" } else { "AFFIANCA 2 PAGINE" }).strong()).min_size(Vec2::new(190.0, 34.0)))
+                            .on_hover_text("Mette due pagine per foglio (2 su 1); premilo di nuovo per tornare a una pagina per foglio").clicked() {
+                            if two { self.st.nup = 1; } else { self.st.nup = 2; self.st.poster = 0; }
+                            self.st.save();
+                        }
+                        if self.st.poster >= 2 { ui.label(RichText::new("Il poster è attivo: pagine per foglio non usate.").weak().small()); }
+                    });
+                    ui.add_space(6.0);
+                    ui.group(|ui| {
+                        ui.label(RichText::new("GRUPPO DI PAGINE (ANCHE DA FILE DIVERSI)").strong().color(ACCENT));
+                        ui.checkbox(&mut self.grp_use, "Unisci le pagine scelte in un unico lavoro");
+                        ui.label(RichText::new("Es. «1» nella prima scheda e «3» nella seconda: con AFFIANCA 2 PAGINE finiscono sullo stesso foglio. «1-3, 5», «2x3», vuoto = nessuna pagina.").weak().small());
+                        ui.add_enabled_ui(self.grp_use, |ui| {
+                            egui::ScrollArea::vertical().max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
+                                for (i, (name, np)) in names.iter().enumerate() {
+                                    let Some((_, spec)) = self.grp_pages.get_mut(i) else { continue };
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(format!("{}. {}", i + 1, short(name, 26))).small());
+                                        ui.label(RichText::new(format!("({np} pag.)")).weak().small());
+                                        ui.add(egui::TextEdit::singleline(spec).hint_text("pagine").desired_width(170.0));
+                                    });
+                                }
+                            });
+                        });
+                        if self.grp_use {
+                            ui.label(RichText::new(format!("GRUPPO: {} PAGINE → {g_sheets} FOGLI PER COPIA · {g_tot} TOTALI", g_items.len())).strong().small());
+                        }
+                    });
+                    ui.label(RichText::new("LE SCHEDE VENGONO STAMPATE NELL'ORDINE IN CUI SONO DISPOSTE").weak().small());
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add(Button::new(RichText::new("STAMPA").strong().size(16.0).color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(130.0, 40.0))).clicked() { go = true; }
+                        if ui.add(Button::new(RichText::new("STAMPA A GRUPPO").strong().size(16.0).color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(190.0, 40.0))).on_hover_text("Stampa solo le pagine scelte qui sopra, unite in un unico lavoro").clicked() { go_grp = true; }
+                        if ui.add(Button::new(RichText::new("CAMBIA").size(16.0)).min_size(Vec2::new(110.0, 40.0))).on_hover_text("APRE LE IMPOSTAZIONI DI STAMPA").clicked() { change = true; }
+                        if warn && ui.add(Button::new(RichText::new("1 COPIA PER FILE").size(16.0)).min_size(Vec2::new(160.0, 40.0))).on_hover_text("IMPOSTA 1 COPIA PER FILE E STAMPA").clicked() { one = true; }
+                        if ui.add(Button::new(RichText::new("ANNULLA").size(16.0)).min_size(Vec2::new(110.0, 40.0))).clicked() { cancel = true; }
+                    });
+                });
             });
         });
         let all: Vec<usize> = (0..n).collect();
-        if go { self.show_pall = false; self.print_docs(&all, true); }
+        if go_grp { self.show_pall = false; let items = self.group_items(); self.print_group(items); }
+        else if go { self.show_pall = false; self.print_docs(&all, true); }
         else if one { self.show_pall = false; self.st.copies = 1; self.st.save(); self.print_docs(&all, true); }
         else if change { // porta alle impostazioni di stampa: li' "STAMPA TUTTO" stampa tutte le schede con le nuove impostazioni
             self.show_pall = false;
@@ -934,6 +1137,15 @@ impl App {
     fn print_dialog(&mut self, ctx: &egui::Context, di: usize) {
         let (mut open, mut go, mut cancel, mut drv, mut drv_reset) = (true, false, false, false, false);
         let n = self.docs[di].sizes.len();
+        // cambiando stampante le selezioni ripartono dalle preferenze del driver (colore/b/n, orientamento, copie)
+        if self.drv_key != self.draft.printer {
+            self.drv_key = self.draft.printer.clone();
+            self.drv_info = spool::driver_prefs(&self.draft.printer, None);
+            if let Some(p) = self.drv_info {
+                self.draft.color = if p.mono { ColorMode::Bw } else { ColorMode::Color };
+                if p.copies > 1 { self.draft.copies = p.copies.clamp(1, 99); }
+            }
+        }
         // le impostazioni del driver valgono solo per la stampante per cui sono state fatte
         if self.draft.drv_printer != self.draft.printer { self.draft.drv_mode.clear(); }
         let pk = (self.draft.printer.clone(), self.draft.drv_mode.clone());
@@ -944,7 +1156,7 @@ impl App {
         }
         let nup = self.draft.nup.max(1) as usize;
         let pages = pages_for(&self.draft, self.docs[di].cur, n);
-        let list = sheets_for(&self.draft, &pages);
+        let list = sheets_for(&self.draft, self.docs[di].id, &pages);
         let sheets = list.len();
         let prev = self.prev.min(sheets.saturating_sub(1));
         // anteprima: il foglio si ricompone solo se cambiano pagine/scala/carta; colore e chiaro/scuro si applicano al volo
@@ -953,7 +1165,7 @@ impl App {
         if self.pv_raw.as_ref().map(|r| &r.0) != Some(&rk) {
             self.pv_gen += 1;
             self.pv_raw = list.get(prev)
-                .and_then(|sh| compose(&self.pdfium, &self.docs[di], &sh.pages, self.paper, &self.draft, 1.5, false, sh.tile))
+                .and_then(|sh| compose(&self.pdfium, &self.docs, &sh.items, self.paper, &self.draft, 1.5, false, sh.tile))
                 .map(|(w, h, b)| (rk, w, h, b));
         }
         let tk: PvKey = (self.pv_gen, self.draft.color, self.draft.bright);
@@ -996,6 +1208,12 @@ impl App {
                             });
                             if !self.draft.drv_mode.is_empty() { ui.label(RichText::new("Impostazioni del driver attive").weak()); }
                             else { ui.label(RichText::new("Impostazioni predefinite del driver (es. fronte/retro)").weak()); }
+                            if let Some(p) = self.drv_info {
+                                let mut v = vec![if p.mono { "BIANCO E NERO" } else { "COLORI" }];
+                                if p.duplex { v.push("FRONTE/RETRO"); }
+                                if p.landscape { v.push("ORIZZONTALE"); }
+                                ui.label(RichText::new(format!("Preferenze del driver: {}", v.join(" · "))).weak().small());
+                            }
                             ui.horizontal(|ui| {
                                 ui.label("Copie");
                                 if ui.add(Button::new(RichText::new("-").size(20.0)).min_size(Vec2::new(40.0, 34.0))).clicked() { self.draft.copies = self.draft.copies.saturating_sub(1).max(1); }
@@ -1220,7 +1438,7 @@ impl eframe::App for App {
         for m in msgs { if let Ipc::Open(p) = m { self.open(p); } }
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
         for p in dropped { self.open(p); }
-        let (mut o, mut pd, mut q, mut all) = (false, false, false, false);
+        let (mut o, mut pd, mut q, mut all, mut grp) = (false, false, false, false, false);
         ctx.input_mut(|i| {
             o |= i.consume_key(egui::Modifiers::COMMAND, egui::Key::O);
             q |= i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::P);
@@ -1290,6 +1508,8 @@ impl eframe::App for App {
                         all |= icon_btn(ui, Ic::All, "STAMPA TUTTO: tutte le schede aperte, ognuna per intero", has_docs);
                         q |= icon_btn(ui, Ic::Quick, "Stampa subito: scheda corrente, ultime impostazioni (Ctrl+Maiusc+P)", cur_doc.is_some());
                         pd |= icon_btn(ui, Ic::Preview, "Stampa… con anteprima (Ctrl+P)", cur_doc.is_some());
+                        if ui.add(Button::new(RichText::new("GRUPPO").size(12.0).strong()).min_size(Vec2::new(68.0, 28.0)))
+                            .on_hover_text("Stampa a gruppo: scegli pagine da più file e stampale insieme, anche 2 su 1").clicked() { grp = true; }
                         ui.separator();
                         if icon_btn_a(ui, Ic::Pan, "Sposta la pagina con il mouse (H)", cur_doc.is_some(), self.pan) { self.pan = true; }
                         if icon_btn_a(ui, Ic::Sel, "Seleziona testo (T)", cur_doc.is_some(), !self.pan) { self.pan = false; }
@@ -1310,6 +1530,7 @@ impl eframe::App for App {
                                 if mi(ui, "Stampa…", "Ctrl+P", cur_doc.is_some()) { pd = true; }
                                 if mi(ui, "Stampa subito", "Ctrl+Maiusc+P", cur_doc.is_some()) { q = true; }
                                 if mi(ui, "STAMPA TUTTO", "", has_docs) { all = true; }
+                                if mi(ui, "Stampa a gruppo…", "", has_docs) { grp = true; }
                                 ui.menu_button("Stampante", |ui| {
                                     for p in &self.printers {
                                         if ui.selectable_label(self.st.printer == *p, p.as_str()).clicked() { self.st.printer = p.clone(); ui.close_menu(); }
@@ -1571,10 +1792,12 @@ impl eframe::App for App {
             if q { self.print_one(i); }
         }
         if all { self.print_all(); }
+        if grp { if !self.docs.is_empty() { self.grp_use = true; self.show_pall = true; } }
         // ---- stampa in corso: cerchio di caricamento finche' il lavoro non e' in coda nella stampante ----
         let mut cancel_print = false;
         if let Some(t) = &self.task {
-            let testo = format!("Invio alla stampante…  {}/{} fogli · scheda {}/{}", t.done.min(t.total), t.total, (t.di + 1).min(t.ids.len()), t.ids.len());
+            let testo = if t.group { format!("Invio alla stampante…  {}/{} fogli · stampa a gruppo", t.done.min(t.total), t.total) }
+                else { format!("Invio alla stampante…  {}/{} fogli · scheda {}/{}", t.done.min(t.total), t.total, (t.di + 1).min(t.ids.len()), t.ids.len()) };
             egui::Area::new(egui::Id::new("printing")).order(egui::Order::Foreground).anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -16.0]).show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
