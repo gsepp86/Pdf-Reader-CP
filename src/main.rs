@@ -451,7 +451,7 @@ mod spool {
         let d = &*dm;
         let mut p = DriverPrefs { copies: 1, ..Default::default() };
         let f = d.dmFields.0;
-        if f & 0x0800 != 0 { p.mono = d.dmColor.0 == 2; }                     // DM_COLOR, DMCOLOR_MONOCHROME
+        if f & 0x0800 != 0 { p.mono = d.dmColor.0 == 1; }                     // DM_COLOR, DMCOLOR_MONOCHROME = 1, DMCOLOR_COLOR = 2
         if f & 0x1000 != 0 { p.duplex = d.dmDuplex.0 != 1; }                   // DM_DUPLEX, DMDUP_SIMPLEX
         if f & 0x0001 != 0 { p.landscape = d.Anonymous1.Anonymous1.dmOrientation == 2; } // DM_ORIENTATION, DMORIENT_LANDSCAPE
         if f & 0x0100 != 0 && d.Anonymous1.Anonymous1.dmCopies > 0 { p.copies = d.Anonymous1.Anonymous1.dmCopies as u32; } // DM_COPIES
@@ -554,7 +554,23 @@ struct Doc { id: u64, pdf: PdfDocument<'static>, path: PathBuf, name: String, si
 #[derive(PartialEq, Clone, Copy)]
 enum Tab { Home, Doc(usize) }
 type PvKey = (u64, ColorMode, i32, i32); // versione del foglio + colore + chiaro/scuro + contrasto
-type RawKey = (usize, usize, PageSel, String, u32, bool, ScaleMode, u32, bool, bool, (i32, i32), (u32, u32)); // poster: griglia + sovrapposizione
+/// Cosa determina la ricomposizione del foglio d'anteprima (pagine, scala, carta, poster e risoluzione).
+#[derive(PartialEq, Clone)]
+struct RawKey {
+    di: usize,
+    prev: usize,
+    sel: PageSel,
+    custom: String,
+    nup: u32,
+    border: bool,
+    scale: ScaleMode,
+    pct: u32,
+    rotate: bool,
+    center: bool,
+    paper: (i32, i32),
+    poster: (u32, u32),
+    res: u32,
+}
 /// Carattere del testo di una pagina: unicode + riquadro [sinistra, basso, destra, alto] in punti PDF.
 struct TCh { c: char, r: [f32; 4] }
 /// Selezione di testo: documento, pagina, indice del primo e dell'ultimo carattere.
@@ -1291,13 +1307,21 @@ impl App {
         let list = sheets_for(&self.draft, self.docs[di].id, &pages);
         let sheets = list.len();
         let prev = self.prev.min(sheets.saturating_sub(1));
-        // anteprima: il foglio si ricompone solo se cambiano pagine/scala/carta; colore e chiaro/scuro si applicano al volo
+        // anteprima: il foglio si ricompone solo se cambiano pagine/scala/carta; colore, chiaro/scuro e contrasto si applicano al volo.
+        // Il foglio viene reso alla risoluzione mostrata sullo schermo (circa 1,5x i pixel del riquadro): testo piu' nitido e
+        // nessun rimpicciolimento pesante della GPU, senza appesantire l'interfaccia (la texture e' anche piu' piccola).
+        let boxk = (300.0 / self.paper.0).min(424.0 / self.paper.1);
+        let ppp = (boxk * ctx.pixels_per_point() * 1.5).clamp(0.5, 4.0);
         let d0 = &self.draft;
-        let rk: RawKey = (di, prev, d0.sel, d0.custom.clone(), d0.nup, d0.border, d0.scale, d0.pct, d0.rotate, d0.center, (self.paper.0 as i32, self.paper.1 as i32), (d0.poster, d0.poster_overlap));
+        let rk = RawKey {
+            di, prev, sel: d0.sel, custom: d0.custom.clone(), nup: d0.nup, border: d0.border, scale: d0.scale, pct: d0.pct,
+            rotate: d0.rotate, center: d0.center, paper: (self.paper.0 as i32, self.paper.1 as i32),
+            poster: (d0.poster, d0.poster_overlap), res: (ppp * 1000.0) as u32,
+        };
         if self.pv_raw.as_ref().map(|r| &r.0) != Some(&rk) {
             self.pv_gen += 1;
             self.pv_raw = list.get(prev)
-                .and_then(|sh| compose(&self.pdfium, &self.docs, &sh.items, self.paper, &self.draft, 1.5, false, sh.tile))
+                .and_then(|sh| compose(&self.pdfium, &self.docs, &sh.items, self.paper, &self.draft, ppp, false, sh.tile))
                 .map(|(w, h, b)| (rk, w, h, b));
         }
         let tk: PvKey = (self.pv_gen, self.draft.color, self.draft.bright, self.draft.contrast);
