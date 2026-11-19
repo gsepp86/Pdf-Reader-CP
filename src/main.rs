@@ -577,7 +577,7 @@ struct App {
     pwd_req: Option<PwdReq>, pwd_queue: Vec<PathBuf>,
     upd: Upd, upd_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     drv_key: String, drv_info: Option<spool::DriverPrefs>,
-    grp_use: bool, grp_pages: Vec<(u64, String)>, pall_thumbs: HashMap<(u64, usize), egui::TextureHandle>,
+    grp_use: bool, grp_pages: Vec<(u64, String)>, thumb_panel: bool, thumbs: HashMap<(u64, usize), egui::TextureHandle>,
 }
 
 impl App {
@@ -605,7 +605,7 @@ impl App {
         detect_byte_order(pdfium);
         let start_pan = st.start_pan;
         let ipc = listener.map(|l| { let (tx, rx) = std::sync::mpsc::channel(); serve(l, tx, cc.egui_ctx.clone()); rx });
-        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: None, tab_drag: None, next_id: 1, pwd_req: None, pwd_queue: vec![], upd: Upd::None, upd_rx: None, drv_key: String::new(), drv_info: None, grp_use: false, grp_pages: vec![], pall_thumbs: HashMap::new() };
+        let mut app = App { pdfium, docs: vec![], tab: Tab::Home, draft: st.clone(), st, printers, show_print: false, prev: 0, pv: None, msg: String::new(), msg_at: None, logo, fs: false, show_info: false, scroll_tab: false, ipc, started: false, sel: None, paper: A4, paper_key: (String::new(), String::new()), pv_raw: None, pv_gen: 0, last_size: (0, 0), last_change: Instant::now(), pan: start_pan, search: String::new(), search_hit: None, search_focus: false, jump: false, show_cfg: false, cfg: Settings::default(), cfg_tab: 0, show_pall: false, pa_mode: false, over_acc: 0.0, over_at: Instant::now(), edge: (true, false), scroll_reset: None, tabs_overflow: false, task: None, tab_drag: None, next_id: 1, pwd_req: None, pwd_queue: vec![], upd: Upd::None, upd_rx: None, drv_key: String::new(), drv_info: None, grp_use: false, grp_pages: vec![], thumb_panel: true, thumbs: HashMap::new() };
         for a in init { app.open(a); }
         app
     }
@@ -760,6 +760,49 @@ impl App {
         Some(t)
     }
 
+    /// Texture della miniatura di una pagina (resa a bassa risoluzione la prima volta che serve).
+    fn thumb_tex(&mut self, ctx: &egui::Context, di: usize, page: usize) -> Option<egui::TextureHandle> {
+        let id = self.docs.get(di)?.id;
+        if let Some(t) = self.thumbs.get(&(id, page)) { return Some(t.clone()); }
+        let (w, h, b) = render(&self.docs[di].pdf, page, 120)?;
+        let t = ctx.load_texture("thumb", egui::ColorImage::from_rgba_unmultiplied([w, h], &b), egui::TextureOptions::LINEAR);
+        if self.thumbs.len() > 240 { self.thumbs.clear(); }
+        self.thumbs.insert((id, page), t.clone());
+        Some(t)
+    }
+
+    /// Mini anteprime delle pagine accanto al documento: clic su una miniatura per saltare a quella pagina.
+    fn thumbs_panel(&mut self, ctx: &egui::Context, di: usize) {
+        let (n, cur) = { let d = &self.docs[di]; (d.sizes.len(), d.cur) };
+        let mut go = None;
+        egui::SidePanel::left("page_thumbs").resizable(false).exact_width(158.0)
+            .frame(egui::Frame::none().fill(Color32::from_gray(232)).inner_margin(egui::Margin::symmetric(4.0, 4.0)))
+            .show(ctx, |ui| {
+                ui.label(RichText::new(format!("PAGINE · {n}")).strong().small().color(ACCENT));
+                ui.add_space(2.0);
+                let row_h = 152.0;
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_h, n, |ui, range| {
+                    for p in range {
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h - 8.0), egui::Sense::click());
+                        if p == cur { ui.painter().rect_filled(rect.shrink(2.0), 4.0, Color32::from_rgb(250, 218, 218)); }
+                        if resp.hovered() { ui.painter().rect_stroke(rect.shrink(2.0), 4.0, egui::Stroke::new(1.5_f32, ACCENT)); }
+                        if let Some(t) = self.thumb_tex(ctx, di, p) {
+                            let sz = t.size_vec2();
+                            let max = Vec2::new(rect.width() - 14.0, rect.height() - 24.0);
+                            let k = (max.x / sz.x).min(max.y / sz.y);
+                            let s = Vec2::new(sz.x * k, sz.y * k);
+                            let r = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.center().y - 5.0), s);
+                            ui.painter().image(t.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                            ui.painter().rect_stroke(r, 0.0, egui::Stroke::new(1.0_f32, Color32::from_gray(150)));
+                        }
+                        ui.painter().text(egui::pos2(rect.center().x, rect.bottom() - 7.0), egui::Align2::CENTER_CENTER, (p + 1).to_string(), egui::FontId::proportional(11.0), Color32::from_gray(60));
+                        if resp.clicked() { go = Some(p); }
+                    }
+                });
+            });
+        if let Some(p) = go { self.docs[di].cur = p; self.sel = None; self.jump = false; self.scroll_reset = Some(false); }
+    }
+
     /// Avvia la stampa delle schede indicate (nell'ordine dato). `all_pages` = true: tutte le pagine di ogni scheda (STAMPA TUTTO).
     fn print_docs(&mut self, idx: &[usize], all_pages: bool) {
         if self.task.is_some() { self.toast("Stampa gia' in corso".into()); return; }
@@ -890,7 +933,7 @@ impl App {
         if !self.docs.is_empty() { self.show_pall = true; }
     }
 
-    /// Richiesta di STAMPA TUTTO: riepilogo grande, anteprime a sinistra, scelta delle pagine da unire
+    /// Richiesta di STAMPA TUTTO: riepilogo grande, scelta delle pagine da unire
     /// in un gruppo (anche tra file diversi) e conferma.
     fn pall_window(&mut self, ctx: &egui::Context) {
         let n = self.docs.len();
@@ -913,21 +956,6 @@ impl App {
         let warn = c > 1 && self.st.ask_copies;
         let colore = match self.st.color { ColorMode::Color => "COLORI", ColorMode::Gray => "SCALA DI GRIGI", ColorMode::Bw => "BIANCO E NERO" };
         let stampante = self.st.printer.to_uppercase();
-        // anteprime: le pagine della selezione a gruppo oppure le prime pagine di ogni scheda
-        let mut prev_pages: Vec<(u64, usize)> = Vec::new();
-        if self.grp_use {
-            prev_pages.extend(g_items.iter().copied().take(24));
-        } else {
-            for d in &self.docs { for p in pages_for(&self.st, d.cur, d.sizes.len()).into_iter().take(8) { if prev_pages.len() < 24 { prev_pages.push((d.id, p)); } } }
-        }
-        self.pall_thumbs.retain(|(id, _), _| self.docs.iter().any(|d| d.id == *id));
-        for &(id, p) in &prev_pages {
-            if self.pall_thumbs.contains_key(&(id, p)) { continue; }
-            if let Some((w, h, b)) = self.docs.iter().find(|d| d.id == id).and_then(|d| render(&d.pdf, p, 100)) {
-                let t = ctx.load_texture("pall_thumb", egui::ColorImage::from_rgba_unmultiplied([w, h], &b), egui::TextureOptions::LINEAR);
-                self.pall_thumbs.insert((id, p), t);
-            }
-        }
         let names: Vec<(String, usize)> = self.docs.iter().map(|d| (d.name.clone(), d.sizes.len())).collect();
         egui::Window::new("STAMPA TUTTO").open(&mut open).collapsible(false).resizable(true).default_size(Vec2::new(880.0, 600.0)).min_width(760.0).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
             ui.set_min_width(840.0);
@@ -942,23 +970,6 @@ impl App {
             ui.add_space(4.0);
             if warn { ui.label(RichText::new(format!("ATTENZIONE: SONO IMPOSTATE {c} COPIE PER OGNI FILE.")).strong().color(ACCENT)); ui.add_space(4.0); }
             ui.horizontal_top(|ui| {
-                // ---- anteprime delle pagine a sinistra ----
-                ui.vertical(|ui| {
-                    ui.set_width(190.0);
-                    ui.label(RichText::new("ANTEPRIMA PAGINE").strong().small().color(ACCENT));
-                    egui::ScrollArea::vertical().max_height(430.0).auto_shrink([false, false]).show(ui, |ui| {
-                        for &(id, p) in &prev_pages {
-                            if let Some(t) = self.pall_thumbs.get(&(id, p)).cloned() {
-                                let sz = t.size_vec2();
-                                let w = 76.0_f32;
-                                ui.image(egui::load::SizedTexture::new(t.id(), Vec2::new(w, (w * sz.y / sz.x.max(1.0)).min(108.0))));
-                                ui.label(RichText::new(format!("pag. {}", p + 1)).weak().small());
-                            }
-                        }
-                        if prev_pages.is_empty() { ui.label(RichText::new("Nessuna pagina selezionata").weak()); }
-                    });
-                });
-                ui.separator();
                 // ---- riepilogo, totale ben visibile e gruppo di pagine ----
                 ui.vertical(|ui| {
                     ui.label(format!("SCHEDE APERTE: {n}"));
@@ -1510,6 +1521,8 @@ impl eframe::App for App {
                         pd |= icon_btn(ui, Ic::Preview, "Stampa… con anteprima (Ctrl+P)", cur_doc.is_some());
                         if ui.add(Button::new(RichText::new("GRUPPO").size(12.0).strong()).min_size(Vec2::new(68.0, 28.0)))
                             .on_hover_text("Stampa a gruppo: scegli pagine da più file e stampale insieme, anche 2 su 1").clicked() { grp = true; }
+                        if ui.add(Button::new(RichText::new(if self.thumb_panel { "PAGINE ✓" } else { "PAGINE" }).size(12.0).strong()).min_size(Vec2::new(68.0, 28.0)))
+                            .on_hover_text("Mostra o nasconde le mini anteprime delle pagine accanto al documento").clicked() { self.thumb_panel = !self.thumb_panel; }
                         ui.separator();
                         if icon_btn_a(ui, Ic::Pan, "Sposta la pagina con il mouse (H)", cur_doc.is_some(), self.pan) { self.pan = true; }
                         if icon_btn_a(ui, Ic::Sel, "Seleziona testo (T)", cur_doc.is_some(), !self.pan) { self.pan = false; }
@@ -1621,6 +1634,11 @@ impl eframe::App for App {
                 }
             }
         } else { self.sel = None; }
+
+        // ---- mini anteprime delle pagine accanto al documento ----
+        if self.thumb_panel {
+            if let Tab::Doc(i) = self.tab { if i < self.docs.len() { self.thumbs_panel(ctx, i); } }
+        }
 
         // ---- area documento: occupa tutto lo spazio rimasto ----
         egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::from_rgb(107, 114, 128))).show(ctx, |ui| match self.tab {

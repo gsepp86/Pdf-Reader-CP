@@ -6,7 +6,8 @@ Programma opensource progettato da Peppe CP con l'aiuto della IA.
 ### Novità
 - **Preferenze del driver**: scegliendo la stampante, colore (colori/bianco e nero), carta e orientamento seguono le preferenze del driver; la finestra mostra il riepilogo (es. BIANCO E NERO · FRONTE/RETRO).
 - **Stampa a gruppo**: tasto **GRUPPO** (o File > Stampa a gruppo…) per scegliere le pagine da stampare scheda per scheda (es. pagina 1 del primo file e pagina 3 del secondo) e unirle in un unico lavoro, anche in 2 su 1.
-- **STAMPA TUTTO** più grande e chiara: pagine totali, fogli per copia, copie e totale fogli ben visibili, mini anteprime delle pagine a sinistra e pulsante **AFFIANCA 2 PAGINE**.
+- **STAMPA TUTTO** più grande e chiara: pagine totali, fogli per copia, copie e totale fogli ben visibili e pulsante **AFFIANCA 2 PAGINE**.
+- **Mini anteprime delle pagine** accanto al documento: colonna a sinistra con tutte le pagine, clic su una miniatura per saltare alla pagina, tasto **PAGINE** per mostrarle o nasconderle.
 - La stampa normale continua a dividere i fogli per PDF, come prima.
 - Versione del programma portata alla 3.3.
 

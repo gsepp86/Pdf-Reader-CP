@@ -20,10 +20,11 @@ viene anche allegato alla release di quel tag. Il workflow parte da solo a ogni 
 - Menu **File**: Apri, Chiudi scheda / tutte, Stampa…, Stampa subito, STAMPA TUTTO, Stampante, Pagine per foglio, Schermo intero, **Info**, Esci.
 - **Stampa…** (Ctrl+P): anteprima dettagliata (1, 2, 4, 6, 9, 16 pagine per foglio), copie, fascicola, intervallo, scala, rotazione, centratura.
 - **Stampa subito** (Ctrl+Maiusc+P): scheda corrente con le ultime impostazioni, senza anteprima.
-- **STAMPA TUTTO**: tutte le schede aperte, ognuna per intero, in sequenza, con un solo messaggio di conferma. La finestra è più grande e mostra subito **schede, pagine totali, fogli per copia, copie e totale fogli da stampare**, con le **mini anteprime delle pagine sulla sinistra**.
+- **STAMPA TUTTO**: tutte le schede aperte, ognuna per intero, in sequenza, con un solo messaggio di conferma. La finestra è più grande e mostra subito **schede, pagine totali, fogli per copia, copie e totale fogli da stampare**.
 - **Stampa a gruppo**: tasto **GRUPPO** nella barra (o File > Stampa a gruppo…). Nella finestra STAMPA TUTTO si sceglie per ogni scheda quali pagine stampare (es. `1` nella prima, `3` nella seconda) e si preme **STAMPA A GRUPPO**: le pagine di file diversi finiscono nello stesso lavoro e, con **AFFIANCA 2 PAGINE**, anche sullo stesso foglio (2 su 1).
 - **Preferenze del driver**: scegliendo la stampante, colore (colori/bianco e nero), carta e orientamento seguono le preferenze predefinite del driver; nella finestra compare il riepilogo (es. BIANCO E NERO · FRONTE/RETRO).
 - Molti PDF: Ctrl+Tab / Ctrl+Maiusc+Tab cambiano scheda, Ctrl+W la chiude, clic con la rotellina sulla scheda la chiude, rotellina del mouse sulla barra scorre le schede.
+- **Mini anteprime delle pagine**: colonna a sinistra del documento con tutte le pagine; clic su una miniatura per saltare a quella pagina, si aggiornano mentre scorri; il tasto **PAGINE** nella barra le mostra o le nasconde.
 - F11 schermo intero · frecce / PagSu / PagGiu cambiano pagina · Ctrl+rotellina zoom · trascina i PDF nella finestra.
 - **Istanza unica**: se il programma e' gia' aperto, un altro PDF (doppio clic, "Apri con", riga di comando) si apre in una nuova scheda della stessa finestra, che torna in primo piano. Usa la porta locale 127.0.0.1:47653.
 - La finestra si apre sempre ingrandita. Ogni scheda ha la sua "x" di chiusura integrata (clic con la rotellina = chiudi).
@@ -50,7 +51,7 @@ viene anche allegato alla release di quel tag. Il workflow parte da solo a ogni 
 [![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://paypal.me/PeppeCP)
 
 https://github.com/gsepp86/Pdf-Reader-CP
-- **STAMPA TUTTO**: chiede sempre "STAMPARE CON LE IMPOSTAZIONI ATTUALI?" con il riepilogo grande (schede, pagine totali, fogli per copia, copie, totale fogli, stampante, colore), le mini anteprime delle pagine e i pulsanti **STAMPA**, **STAMPA A GRUPPO**, **AFFIANCA 2 PAGINE**, **CAMBIA** (apre le impostazioni di stampa: con **STAMPA TUTTO** stampa tutte le schede con le nuove impostazioni) e **ANNULLA**. Se sono impostate piu' copie compare anche **1 COPIA PER FILE**.
+- **STAMPA TUTTO**: chiede sempre "STAMPARE CON LE IMPOSTAZIONI ATTUALI?" con il riepilogo grande (schede, pagine totali, fogli per copia, copie, totale fogli, stampante, colore) e i pulsanti **STAMPA**, **STAMPA A GRUPPO**, **AFFIANCA 2 PAGINE**, **CAMBIA** (apre le impostazioni di stampa: con **STAMPA TUTTO** stampa tutte le schede con le nuove impostazioni) e **ANNULLA**. Se sono impostate piu' copie compare anche **1 COPIA PER FILE**.
 - **Cambio pagina scorrendo**: con la rotella, il touchpad o lo strumento mano, arrivati in fondo alla pagina si continua sulla successiva (e in alto sulla precedente), senza cliccare i pulsanti.
 - **Schede tante**: quando non entrano nella barra compaiono piccoli numeri 1, 2, 3... sotto ogni scheda.
 - **Finestra di stampa**: la colonna delle impostazioni (compreso il cursore Scuro-Chiaro in "Colore e luminosita'") usa piu' altezza e ha una barra di scorrimento visibile se serve.
