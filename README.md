@@ -13,7 +13,7 @@ Scarica da solo pdfium.dll e Inno Setup e produce `dist\PDFReaderCP_Setup_3.3.ex
 
 **Metodo 2 - senza installare nulla:** carica la cartella su GitHub, poi Actions > "Crea installer" > Run workflow.
 L'installer si scarica dagli "Artifacts" a fine lavoro; se nel campo `release_tag` scrivi il nome di un tag (per esempio `3.3`)
-viene anche allegato alla release di quel tag. Il workflow parte da solo a ogni push su `main` e su un tag `v*` o numerico.
+viene anche allegato alla release di quel tag. Il workflow parte da solo a ogni push su `main` e su un tag `v*` o numerico; pubblicando un ramo con il numero di versione (per esempio `3.3`) crea la release di quella versione con l'installer allegato.
 
 ## Uso
 - Barra del titolo (una sola riga): **File** | schede (tutto lo spazio disponibile) | icone **Stampa…**, **Stampa subito**, **STAMPA TUTTO** | riduci / massimizza / chiudi.

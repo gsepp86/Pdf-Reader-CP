@@ -2,7 +2,8 @@ name: Crea installer
 
 on:
   push:
-    branches: [main]
+    # un ramo con il numero di versione (es. 3.3) pubblica la release con l'installer
+    branches: [main, "[0-9]*"]
     tags: ["v*", "[0-9]*"]
   workflow_dispatch:
     inputs:
@@ -22,7 +23,7 @@ jobs:
   build:
     runs-on: windows-latest
     env:
-      RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
+      RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || (github.ref_type == 'branch' && github.ref_name != 'main' && github.ref_name) || inputs.release_tag || '' }}
 
     steps:
       - name: Checkout
