@@ -330,7 +330,7 @@ fn hit(chars: &[TCh], x: f32, y: f32) -> Option<usize> {
     best.map(|(i, _)| i)
 }
 
-/// Colore / scala di grigi / bianco e nero, chiaro-scuro (curva gamma: il bianco della carta resta bianco) e contrasto.
+/// Colore / automatico / bianco e nero (scala di grigi, così le linee chiare restano visibili), chiaro-scuro (curva gamma: il bianco della carta resta bianco) e contrasto.
 fn tone(buf: &mut [u8], st: &Settings) {
     if st.color == ColorMode::Color && st.bright == 0 && st.contrast == 0 { return; }
     let g = 2f32.powf(-(st.bright as f32) / 50.0); // >0 = piu' chiaro, <0 = piu' scuro
@@ -345,7 +345,8 @@ fn tone(buf: &mut [u8], st: &Settings) {
         match st.color {
             ColorMode::Color => { p[0] = lut[p[0] as usize]; p[1] = lut[p[1] as usize]; p[2] = lut[p[2] as usize]; }
             ColorMode::Auto => { p[0] = lut[p[0] as usize]; p[1] = lut[p[1] as usize]; p[2] = lut[p[2] as usize]; }
-            ColorMode::Bw => { let v = if lut[lum] >= 128 { 255 } else { 0 }; p[0] = v; p[1] = v; p[2] = v; }
+            // bianco e nero = scala di grigi: niente soglia netta, altrimenti le linee sottili chiare (griglie, bordi, scansioni sbiadite) diventavano bianche e sparivano
+            ColorMode::Bw => { let l = lut[lum]; p[0] = l; p[1] = l; p[2] = l; }
         }
     }
 }
