@@ -34,6 +34,13 @@ enum StartMode { Last, Mine }
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
 enum PageView { Thumbs, Facing, Last }
 
+/// Lingua della finestra Impostazioni (salvata in settings.json).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+enum Lang { #[default] It, En }
+
+/// Scritta della finestra Impostazioni in italiano o in inglese.
+fn tr(lang: Lang, it: &'static str, en: &'static str) -> &'static str { if lang == Lang::En { en } else { it } }
+
 /// "Le mie impostazioni predefinite" di stampa (stampante, copie, colore e funzioni del driver, es. fronte/retro).
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
@@ -49,10 +56,10 @@ impl PrintPrefs {
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
-struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, poster: u32, poster_overlap: u32, border: bool, color: ColorMode, bright: i32, contrast: i32, drv_printer: String, drv_mode: String, background: bool, start_max: bool, start_pan: bool, fit_page: bool, ask_copies: bool, start_mode: StartMode, reset_std: bool, use_driver_defaults: bool, view: PageView, thumb_on: bool, facing: bool, mine: PrintPrefs }
+struct Settings { printer: String, copies: u32, collate: bool, sel: PageSel, custom: String, scale: ScaleMode, pct: u32, rotate: bool, center: bool, nup: u32, poster: u32, poster_overlap: u32, border: bool, color: ColorMode, bright: i32, contrast: i32, drv_printer: String, drv_mode: String, background: bool, start_max: bool, start_pan: bool, fit_page: bool, ask_copies: bool, start_mode: StartMode, reset_std: bool, use_driver_defaults: bool, view: PageView, thumb_on: bool, facing: bool, lang: Lang, mine: PrintPrefs }
 impl Default for Settings {
     fn default() -> Self {
-        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, poster: 0, poster_overlap: 0, border: true, color: ColorMode::Color, bright: 0, contrast: 0, drv_printer: String::new(), drv_mode: String::new(), background: false, start_max: true, start_pan: false, fit_page: false, ask_copies: true, start_mode: StartMode::Last, reset_std: true, use_driver_defaults: true, view: PageView::Thumbs, thumb_on: true, facing: false, mine: PrintPrefs::default() }
+        Self { printer: String::new(), copies: 1, collate: true, sel: PageSel::All, custom: "1-".into(), scale: ScaleMode::Fit, pct: 100, rotate: true, center: true, nup: 1, poster: 0, poster_overlap: 0, border: true, color: ColorMode::Color, bright: 0, contrast: 0, drv_printer: String::new(), drv_mode: String::new(), background: false, start_max: true, start_pan: false, fit_page: false, ask_copies: true, start_mode: StartMode::Last, reset_std: true, use_driver_defaults: true, view: PageView::Thumbs, thumb_on: true, facing: false, lang: Lang::It, mine: PrintPrefs::default() }
     }
 }
 impl Settings {
@@ -1176,85 +1183,94 @@ impl App {
     fn settings_window(&mut self, ctx: &egui::Context) {
         let (mut open, mut save, mut cancel, mut reset) = (true, false, false, false);
         let (mut cfg_drv, mut take) = (false, false);
-        egui::Window::new("Impostazioni").open(&mut open).collapsible(false).resizable(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
+        let l = self.cfg.lang; // lingua scelta nella finestra: cambia subito, anche prima di "Salva"
+        egui::Window::new(tr(l, "Impostazioni", "Settings")).open(&mut open).collapsible(false).resizable(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.screen_rect().center()).show(ctx, |ui| {
             ui.set_min_width(470.0);
             ui.horizontal(|ui| {
-                for (i, n) in ["Generale", "Stampa"].into_iter().enumerate() {
+                for (i, n) in [tr(l, "Generale", "General"), tr(l, "Stampa", "Printing")].into_iter().enumerate() {
                     if ui.selectable_label(self.cfg_tab == i, RichText::new(n).size(16.0)).clicked() { self.cfg_tab = i; }
                 }
             });
             ui.separator();
             if self.cfg_tab == 0 {
                 ui.group(|ui| {
-                    ui.label(RichText::new("Avvio e finestre").strong().color(ACCENT));
-                    ui.checkbox(&mut self.cfg.background, "Apri sempre la finestra in secondo piano (non ruba il focus)");
-                    ui.label(RichText::new("Aprendo altri PDF con il programma già aperto, restano nella sua finestra senza portarla davanti.").weak());
-                    ui.checkbox(&mut self.cfg.start_max, "Avvia sempre ingrandita");
+                    ui.label(RichText::new(tr(l, "Lingua", "Language")).strong().color(ACCENT));
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.cfg.lang, Lang::It, "Italiano");
+                        ui.radio_value(&mut self.cfg.lang, Lang::En, "English");
+                    });
+                    ui.label(RichText::new(tr(l, "La lingua vale per questa finestra e si salva con «Salva». Italiano resta la lingua predefinita del programma.", "The language applies to this window and is stored with “Save”. Italian remains the default language of the program.")).weak().small());
                 });
                 ui.group(|ui| {
-                    ui.label(RichText::new("Visualizzazione").strong().color(ACCENT));
+                    ui.label(RichText::new(tr(l, "Avvio e finestre", "Startup and windows")).strong().color(ACCENT));
+                    ui.checkbox(&mut self.cfg.background, tr(l, "Apri sempre la finestra in secondo piano (non ruba il focus)", "Always open the window in the background (it does not take focus)"));
+                    ui.label(RichText::new(tr(l, "Aprendo altri PDF con il programma già aperto, restano nella sua finestra senza portarla davanti.", "When other PDFs are opened while the program is already running, they stay in its window without bringing it to the front.")).weak());
+                    ui.checkbox(&mut self.cfg.start_max, tr(l, "Avvia sempre ingrandita", "Always start maximized"));
+                });
+                ui.group(|ui| {
+                    ui.label(RichText::new(tr(l, "Visualizzazione", "View")).strong().color(ACCENT));
                     ui.horizontal(|ui| {
-                        ui.label("Strumento iniziale:");
-                        ui.radio_value(&mut self.cfg.start_pan, false, "Seleziona testo");
-                        ui.radio_value(&mut self.cfg.start_pan, true, "Sposta pagina");
+                        ui.label(tr(l, "Strumento iniziale:", "Initial tool:"));
+                        ui.radio_value(&mut self.cfg.start_pan, false, tr(l, "Seleziona testo", "Select text"));
+                        ui.radio_value(&mut self.cfg.start_pan, true, tr(l, "Sposta pagina", "Move page"));
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Vista iniziale:");
-                        ui.radio_value(&mut self.cfg.fit_page, false, "Larghezza");
-                        ui.radio_value(&mut self.cfg.fit_page, true, "Pagina intera");
+                        ui.label(tr(l, "Vista iniziale:", "Initial view:"));
+                        ui.radio_value(&mut self.cfg.fit_page, false, tr(l, "Larghezza", "Width"));
+                        ui.radio_value(&mut self.cfg.fit_page, true, tr(l, "Pagina intera", "Whole page"));
                     });
                     ui.separator();
-                    ui.label(RichText::new("Pagine all'avvio:").small());
-                    ui.radio_value(&mut self.cfg.view, PageView::Thumbs, "Mini anteprime sulla sinistra");
-                    ui.radio_value(&mut self.cfg.view, PageView::Facing, "Pagine affiancate (2 per volta)");
-                    ui.radio_value(&mut self.cfg.view, PageView::Last, "Come al precedente avvio (salva le modifiche)");
-                    ui.label(RichText::new("Con l'ultima scelta la vista cambiata dal menu File > Visualizzazione pagine viene salvata a ogni modifica.").weak().small());
+                    ui.label(RichText::new(tr(l, "Pagine all'avvio:", "Pages at startup:")).small());
+                    ui.radio_value(&mut self.cfg.view, PageView::Thumbs, tr(l, "Mini anteprime sulla sinistra", "Thumbnails on the left"));
+                    ui.radio_value(&mut self.cfg.view, PageView::Facing, tr(l, "Pagine affiancate (2 per volta)", "Facing pages (2 at a time)"));
+                    ui.radio_value(&mut self.cfg.view, PageView::Last, tr(l, "Come al precedente avvio (salva le modifiche)", "As on the previous start (saves changes)"));
+                    ui.label(RichText::new(tr(l, "Con l'ultima scelta la vista cambiata dal menu File > Visualizzazione pagine viene salvata a ogni modifica.", "With the last choice, the view changed from the File > Page view menu is saved on every change.")).weak().small());
                 });
             } else {
                 ui.group(|ui| {
-                    ui.label(RichText::new("All'avvio del programma").strong().color(ACCENT));
-                    ui.radio_value(&mut self.cfg.start_mode, StartMode::Last, "Usa le ultime impostazioni di stampa utilizzate");
-                    ui.radio_value(&mut self.cfg.start_mode, StartMode::Mine, "Usa le mie impostazioni predefinite (qui sotto)");
-                    ui.checkbox(&mut self.cfg.reset_std, "Ripristina sempre la stampa standard (1 su 1, tutte le pagine)");
-                    ui.checkbox(&mut self.cfg.use_driver_defaults, "Usa le impostazioni predefinite del driver (es. fronte/retro)");
+                    ui.label(RichText::new(tr(l, "All'avvio del programma", "At program startup")).strong().color(ACCENT));
+                    ui.radio_value(&mut self.cfg.start_mode, StartMode::Last, tr(l, "Usa le ultime impostazioni di stampa utilizzate", "Use the last print settings used"));
+                    ui.radio_value(&mut self.cfg.start_mode, StartMode::Mine, tr(l, "Usa le mie impostazioni predefinite (qui sotto)", "Use my default settings (below)"));
+                    ui.checkbox(&mut self.cfg.reset_std, tr(l, "Ripristina sempre la stampa standard (1 su 1, tutte le pagine)", "Always restore standard printing (1 per sheet, all pages)"));
+                    ui.checkbox(&mut self.cfg.use_driver_defaults, tr(l, "Usa le impostazioni predefinite del driver (es. fronte/retro)", "Use the driver defaults (e.g. duplex)"));
                 });
                 ui.add_enabled_ui(self.cfg.start_mode == StartMode::Mine, |ui| {
                     ui.group(|ui| {
-                        ui.label(RichText::new("Le mie impostazioni predefinite").strong().color(ACCENT));
+                        ui.label(RichText::new(tr(l, "Le mie impostazioni predefinite", "My default settings")).strong().color(ACCENT));
                         ui.horizontal(|ui| {
-                            ui.label("Stampante:");
+                            ui.label(tr(l, "Stampante:", "Printer:"));
                             egui::ComboBox::from_id_salt("cfg_pr").width(300.0).selected_text(self.cfg.mine.printer.clone()).show_ui(ui, |ui| {
                                 for p in &self.printers { ui.selectable_value(&mut self.cfg.mine.printer, p.clone(), p); }
                             });
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Copie:");
+                            ui.label(tr(l, "Copie:", "Copies:"));
                             ui.add(egui::DragValue::new(&mut self.cfg.mine.copies).range(1..=99));
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Colore:");
-                            ui.radio_value(&mut self.cfg.mine.color, ColorMode::Color, "Colori");
-                            ui.radio_value(&mut self.cfg.mine.color, ColorMode::Auto, "Automatico");
-                            ui.radio_value(&mut self.cfg.mine.color, ColorMode::Bw, "Bianco e nero");
+                            ui.label(tr(l, "Colore:", "Color:"));
+                            ui.radio_value(&mut self.cfg.mine.color, ColorMode::Color, tr(l, "Colori", "Color"));
+                            ui.radio_value(&mut self.cfg.mine.color, ColorMode::Auto, tr(l, "Automatico", "Automatic"));
+                            ui.radio_value(&mut self.cfg.mine.color, ColorMode::Bw, tr(l, "Bianco e nero", "Black and white"));
                         });
                         ui.horizontal(|ui| {
-                            if ui.add(Button::new("Impostazioni driver stampante…").min_size(Vec2::new(250.0, 32.0))).clicked() { cfg_drv = true; }
-                            if !self.cfg.mine.drv_mode.is_empty() { ui.label(RichText::new("attive").weak()); }
+                            if ui.add(Button::new(tr(l, "Impostazioni driver stampante…", "Printer driver settings…")).min_size(Vec2::new(250.0, 32.0))).clicked() { cfg_drv = true; }
+                            if !self.cfg.mine.drv_mode.is_empty() { ui.label(RichText::new(tr(l, "attive", "active")).weak()); }
                         });
-                        if ui.add(Button::new("Prendi le impostazioni di stampa attuali").min_size(Vec2::new(250.0, 32.0))).clicked() { take = true; }
+                        if ui.add(Button::new(tr(l, "Prendi le impostazioni di stampa attuali", "Take the current print settings")).min_size(Vec2::new(250.0, 32.0))).clicked() { take = true; }
                     });
                 });
                 ui.group(|ui| {
-                    ui.label(RichText::new("Conferme").strong().color(ACCENT));
-                    ui.checkbox(&mut self.cfg.ask_copies, "Chiedi conferma quando stampo più di una copia");
+                    ui.label(RichText::new(tr(l, "Conferme", "Confirmations")).strong().color(ACCENT));
+                    ui.checkbox(&mut self.cfg.ask_copies, tr(l, "Chiedi conferma quando stampo più di una copia", "Ask for confirmation when printing more than one copy"));
                 });
             }
             ui.separator();
-            ui.label(RichText::new(format!("Salvate in: {}", Settings::path().map(|p| p.display().to_string()).unwrap_or_default())).weak().small());
+            ui.label(RichText::new(format!("{}: {}", tr(l, "Salvate in", "Saved in"), Settings::path().map(|p| p.display().to_string()).unwrap_or_default())).weak().small());
             ui.horizontal(|ui| {
-                if ui.add(Button::new(RichText::new("Salva").strong().color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(110.0, 34.0))).clicked() { save = true; }
-                if ui.add(Button::new("Annulla").min_size(Vec2::new(90.0, 34.0))).clicked() { cancel = true; }
-                if ui.add(Button::new("Ripristina predefinite").min_size(Vec2::new(170.0, 34.0))).clicked() { reset = true; }
+                if ui.add(Button::new(RichText::new(tr(l, "Salva", "Save")).strong().color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(110.0, 34.0))).clicked() { save = true; }
+                if ui.add(Button::new(tr(l, "Annulla", "Cancel")).min_size(Vec2::new(90.0, 34.0))).clicked() { cancel = true; }
+                if ui.add(Button::new(tr(l, "Ripristina predefinite", "Restore defaults")).min_size(Vec2::new(170.0, 34.0))).clicked() { reset = true; }
             });
         });
         if reset { let p = self.cfg.printer.clone(); self.cfg = Settings::default(); self.cfg.printer = p; }
@@ -1277,7 +1293,7 @@ impl App {
                 PageView::Last => { self.thumb_panel = self.cfg.thumb_on; self.facing = self.cfg.facing; }
             }
             self.show_cfg = false;
-            self.toast("Impostazioni salvate".into());
+            self.toast(tr(self.st.lang, "Impostazioni salvate", "Settings saved").into());
         }
         if cancel || !open { self.show_cfg = false; }
     }
@@ -1721,7 +1737,7 @@ impl eframe::App for App {
                                 ui.checkbox(&mut self.st.background, "Apri sempre in secondo piano")
                                     .on_hover_text("Aprendo altri PDF la finestra del programma non passa davanti: non perdi il focus su quello che stai usando");
                                 ui.separator();
-                                if mi(ui, "Impostazioni…", "Ctrl+,", true) { self.show_cfg = true; self.cfg = self.st.clone(); }
+                                if mi(ui, tr(self.st.lang, "Impostazioni…", "Settings…"), "Ctrl+,", true) { self.show_cfg = true; self.cfg = self.st.clone(); }
                                 if mi(ui, "Info", "", true) { show_info = true; }
                                 if mi(ui, "Esci", "", true) { quit = true; }
                             });

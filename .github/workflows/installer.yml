@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Tag della release a cui allegare l'installer (es. 3.3). Lascia vuoto per non allegare."
+        description: "Tag della release a cui allegare l'installer (es. 3.3). Se la release esiste viene aggiornata, senza cambiare numero di versione. Lascia vuoto per non allegare."
         required: false
         default: "3.3"
 
@@ -89,6 +89,9 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           files: dist/*.exe
           fail_on_unmatched_files: true
+          # ripubblicando la stessa versione la release esistente viene aggiornata: il numero di versione resta quello
+          allowUpdates: true
+          make_latest: true
 
       - name: Allinea il tag al commit pubblicato
         if: env.RELEASE_TAG != '' && github.ref_type == 'branch'

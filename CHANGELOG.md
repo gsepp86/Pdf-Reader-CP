@@ -4,6 +4,7 @@
 Programma opensource progettato da Peppe CP con l'aiuto della IA.
 
 ### Novità
+- **Lingua inglese nella finestra Impostazioni**: in *Impostazioni > Generale* si sceglie **Italiano** o **English**; la scelta si salva in settings.json e la finestra passa subito alla lingua scelta (Italiano resta la lingua predefinita). La versione del programma resta la 3.3.
 - **Preferenze del driver**: scegliendo la stampante, colore (colori/bianco e nero), carta e orientamento seguono le preferenze del driver; la finestra mostra il riepilogo (es. BIANCO E NERO · FRONTE/RETRO).
 - **Stampa a gruppo** nella finestra **STAMPA TUTTO**: si scelgono le pagine scheda per scheda (es. pagina 1 del primo file e pagina 3 del secondo) e si uniscono in un unico lavoro, anche in 2 su 1. Nella finestra **Stampa…** la sezione è stata tolta: togliendo la spunta a **Fascicola** i fogli escono già raggruppati.
 - **Corretto**: con il driver della stampante impostato su bianco e nero la finestra di stampa mostrava «Colori» (e viceversa); ora il valore letto dal driver viene riportato nel verso giusto.
