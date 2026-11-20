@@ -1,5 +1,6 @@
 # PDF Reader CP 3.3
 Programma opensource progettato da Peppe CP con l'aiuto della IA.
+
 In questa nuova build è stato aggiunto il supporto in inglese (attualmente supporta italiano e inglese)
 
 ## Se vuoi contribuire al mio lavoro ti lascio in basso il pulsante per contribuire anche con una piccola donazione simbolica visto il tempo che ti farò risparmiare per stampare grossi quantitativi di pdf ;-)
